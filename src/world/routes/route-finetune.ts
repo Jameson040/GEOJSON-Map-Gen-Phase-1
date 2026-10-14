@@ -5,9 +5,18 @@ import type { Settlement } from "../human/human-types";
 // LAYER 6 FINETUNING — DE-DUPLICATION, TRUNK MERGING & NETWORK STATS
 // ---------------------------------------------------------------------------
 
+/** Optional pathfinder telemetry surfaced through the finetune report. */
+export interface RouteTelemetry {
+  fallbackArcs: number;
+  causewayRoutes: number;
+  ferryRoutes: number;
+  straightened: number;
+}
+
 export function runRouteFinetune(
   rawRoutes: RouteFeature[],
-  settlements: Settlement[]
+  settlements: Settlement[],
+  telemetry?: RouteTelemetry
 ): { routes: RouteFeature[]; stats: RouteStats; report: RouteFinetuneReport } {
   const t0 = performance.now();
   const kept: RouteFeature[] = [];
@@ -121,6 +130,10 @@ export function runRouteFinetune(
     bridgesAdded: bridgesCount,
     finalRoutesCount: kept.length,
     droppedByRule,
+    fallbackArcs: telemetry?.fallbackArcs ?? 0,
+    causewayRoutes: telemetry?.causewayRoutes ?? 0,
+    ferryRoutes: telemetry?.ferryRoutes ?? 0,
+    straightened: telemetry?.straightened ?? 0,
     elapsedMs: Math.round(performance.now() - t0),
   };
 

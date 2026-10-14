@@ -14,6 +14,7 @@ import { formatLatLon, PLANET_WIDTH, wrapWorldX } from "../world/constants";
 import { ZoomIn, ZoomOut, Maximize2, Crosshair, Gauge, Layers } from "lucide-react";
 import type { CadastreConfig, SettlementCadastre } from "../world/cadastre/cadastre-types";
 import { getCadastreForSettlement } from "../world/cadastre/cadastre-cache";
+import { MapLegend } from "./MapLegend";
 
 function geographicFeatureVisible(f: MapFeature, layers: RenderLayers): boolean {
   switch (f.properties.featureType) {
@@ -613,6 +614,11 @@ export function MapViewer({
           </>
         )}
       </div>
+
+      {/* legend */}
+      {mode === "region" && (routes?.visible || human?.visible) && (
+        <MapLegend themeId={themeId} raised={minimap.length > 0} />
+      )}
 
       {/* minimap */}
       {minimap.length > 0 && (

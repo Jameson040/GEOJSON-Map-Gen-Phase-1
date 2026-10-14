@@ -92,6 +92,14 @@ export interface RouteFinetuneReport {
   bridgesAdded: number;
   finalRoutesCount: number;
   droppedByRule: Record<string, number>;
+  /** Paths that had no terrain route at all and fell back to an arc (target: 0). */
+  fallbackArcs: number;
+  /** Land routes that crossed a lake via causeway. */
+  causewayRoutes: number;
+  /** Land routes that hopped a strait/bay via ferry. */
+  ferryRoutes: number;
+  /** Winding paths replaced by a saner line on the relaxed cost surface. */
+  straightened: number;
   elapsedMs: number;
 }
 

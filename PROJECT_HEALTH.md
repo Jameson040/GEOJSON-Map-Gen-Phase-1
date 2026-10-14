@@ -100,6 +100,52 @@ byte-identical), build OK, and an 18-seed sweep (6 known + 12 fresh) with
 zero verifier violations, zero river-riding (max consecutive channel sample
 run = 1), and real bridge counts (46–133 per region).
 
+## Route-Look Pass 2 (2026-10-14, same session — "roads are straight lines")
+
+User follow-up: roads rendered as ruler-straight spokes, line styles had no
+legend, and settlement icons appeared to change position across zoom levels.
+Diagnosis via new pathfinder telemetry (surfaced in `RouteFinetuneReport`:
+`fallbackArcs` / `causewayRoutes` / `ferryRoutes` / `straightened`):
+
+- **Median route sinuosity was 1.00** — not fallback arcs (those were rare)
+  but the A* itself beelining, because the cost surface is uniform (flat 1.0
+  grassland) between features and waypoints were downsampled every 2nd cell.
+  Fixed with **seeded per-cell micro-terrain noise** (±15%, deterministic
+  hash of cell + region seed — no RNG state, verified byte-identical across
+  regenerations) and **full waypoint fidelity**. Long-haul (≥100 km) roads
+  now wind at median sinuosity 1.26–1.40 with 15–27 points each; only
+  genuinely featureless corridors stay straight.
+- **Pathfinding grid raised 100×100 → 180×180** (~33 km cells on a
+  supercontinent, ~7 km on islands): river tolls, valley bands and mountain
+  avoidance now resolve at twice the linear detail. Iteration cap scales
+  with cell count.
+- **Water-separated settlement pairs** used to fall back to a straight
+  overwater arc (no land path exists when the sea is impassable). Land
+  routes now try three policies: no water → lake causeway (toll 9) → sea
+  ferry hop (toll 14) — the network connects at the narrowest crossing
+  instead of drawing fantasy bridges. Fallback arcs: 0 across test seeds.
+- **Sinuosity retry preserves mountains**: the relaxed re-run compresses
+  only costs below 8, so straightening a winding road can never route it
+  through a range; last-resort arc only above 4.9 (verifier caps 5.0).
+- **Sea-lane verifier exclusion scales** (`min(40 km, 20% of lane length)`)
+  so short harbour hops still expose open-water samples to check; land
+  routes may show ≤ 3 consecutive at-sea samples (a ferry/bridge hop) but
+  fail if they sail.
+- **Map legend added** (`src/components/MapLegend.tsx`): collapsible
+  bottom-left panel naming every line style (King's Highway solid, arterial
+  solid, byway dashed, mountain pass red-dashed, sea lane dotted — colours
+  mirrored from both renderer palettes) and settlement marker shapes.
+
+On "icons change places when zooming": they do not move — all layers share
+one world→screen transform. What changes is *which* things are drawn:
+settlements and rivers are LOD-gated (`lodMinZoom` / `lodZoom`, so more
+villages and tributaries appear as you zoom in), labels switch anchoring at
+cadastre zoom (≥ 45×), and drawn river width grows with zoom — a city a few
+km from a river can therefore look "on" it at one zoom and clear of it at
+another. Roads are computed on the **full frozen geography** (every river
+vertex, range/lake polygon and biome patch via `BioEnvReader`), never on
+the LOD-filtered set the canvas happens to show.
+
 ## Confirmed Problems Repaired in This Pass
 
 - **Cadastre JIT cache staleness (correctness bug):** the cache key was

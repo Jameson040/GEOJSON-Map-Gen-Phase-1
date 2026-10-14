@@ -305,7 +305,12 @@ export async function generateRouteLayer(
   // Stage 5: Finetuning, De-duplication & Verification
   await tick(5, "Finetuning Corridors & Invariant Verification", 90, rawRoutes.length);
   const verifyBefore = verifyRouteLayer(rawRoutes, settlements, region, geoCountBefore, settlementsCountBefore);
-  const { routes, stats, report } = runRouteFinetune(rawRoutes, settlements);
+  const { routes, stats, report } = runRouteFinetune(rawRoutes, settlements, {
+    fallbackArcs: pathfinder.fallbackArcs,
+    causewayRoutes: pathfinder.causewayRoutes,
+    ferryRoutes: pathfinder.ferryRoutes,
+    straightened: pathfinder.straightened,
+  });
   const verifyAfter = verifyRouteLayer(routes, settlements, region, geoCountBefore, settlementsCountBefore);
 
   await tick(5, "Trade Route Network Complete", 100, routes.length);

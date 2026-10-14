@@ -7,18 +7,21 @@ import { makeRng } from "../rng";
 // ---------------------------------------------------------------------------
 // TERRAIN-AWARE A* PATHFINDING & CORRIDOR RELAXATION
 //
-// Cost model (per 100×100 cell):
+// Cost model (per cell of the 180×180 grid — ~7 km cells on an island region,
+// ~33 km on a supercontinent):
 //   • Mountain ranges +16, plateaus +2.8 — peaks are avoided, not impassable
 //     (real roads cross at passes; the finetune renames those routes).
-//   • River VALLEY band (beside the water, ~0.4–4 km out): ×0.7 — roads like
-//     walking along valleys and lake shores where the going is easy.
+//   • River VALLEY band (beside the water): ×0.7 — roads like walking along
+//     valleys and lake shores where the going is easy.
 //   • River CHANNEL (in/on the water itself): a crossing toll that scales
 //     with the river's Strahler order — fording a headwater is cheap,
 //     bridging a great trunk is expensive. Because the toll is paid PER CELL,
 //     A* naturally crosses at the narrowest point and perpendicular (fewest
 //     toll cells), and never rides lengthwise down a big river.
-//   • Lakes are impassable for roads (attempt 1). Only when no land detour
-//     exists does a second attempt allow a costly causeway/ferry crossing.
+//   • Lakes are impassable for roads (attempt 1); a second attempt allows a
+//     costly causeway, a third a ferry hop across a strait — so water-
+//     separated settlements still connect at the narrowest going instead of
+//     a fantasy straight line.
 // ---------------------------------------------------------------------------
 
 export interface RoutePathResult {
@@ -36,12 +39,23 @@ function channelToll(order: number): number {
   return 2 + Math.max(0, order - 1) * 4.5; // order 1 ≈ 2, order 5 ≈ 20
 }
 
+/** Deterministic per-cell hash → 0..1 (seeded micro-terrain: no RNG state). */
+function cellNoise(col: number, row: number, seed: string): number {
+  let h = (2166136261 ^ (col * 374761393) ^ (row * 668265263)) >>> 0;
+  for (let i = 0; i < seed.length; i++) {
+    h = ((h ^ seed.charCodeAt(i)) * 16777619) >>> 0;
+  }
+  h = (h ^ (h >>> 13)) >>> 0;
+  h = (h * 1274126177) >>> 0;
+  return (h ^ (h >>> 16)) / 4294967296;
+}
+
 export class RoutePathfinder {
   private geo: BioEnvReader;
   private width: number;
   private height: number;
-  private gridCols = 100;
-  private gridRows = 100;
+  private gridCols = 180;
+  private gridRows = 180;
   private minX: number;
   private minY: number;
   private cellW: number;
@@ -59,6 +73,12 @@ export class RoutePathfinder {
   private riverOrder: Uint8Array;
   private lakeCell: Uint8Array;
   private mountainRidge: Uint8Array;
+
+  // Telemetry: why did paths come out the way they did?
+  fallbackArcs = 0; // no terrain path existed at all (should stay ~0)
+  straightened = 0; // sinuosity retry replaced a wildly winding path
+  causewayRoutes = 0; // land routes that had to cross a lake
+  ferryRoutes = 0; // land routes that had to hop a strait/bay
 
   constructor(region: GeneratedRegion, seed = region.descriptor.regionSeed) {
     this.geo = new BioEnvReader(region);
@@ -134,6 +154,11 @@ export class RoutePathfinder {
         else if (env.biome === "grassland" || env.biome === "savanna") cost *= 0.8; // easy flat travel
         else if (env.biome === "forest") cost += 1.4;
 
+        // Seeded micro-terrain: uniform cost surfaces make A* return
+        // ruler-straight staircases; ±15% per-cell grain lets roads weave
+        // the way real tracks do, without overriding real features.
+        cost *= 0.85 + 0.3 * cellNoise(c, r, this.seed);
+
         // --- Rivers ---
         const river = this.geo.nearestRiverInfo(p);
         if (river) {
@@ -194,12 +219,15 @@ export class RoutePathfinder {
 
   /**
    * Find terrain-respecting route between start and end.
-   * Lakes are impassable on the first attempt; a second attempt allows a
-   * costly causeway/ferry so the network never fails to connect. Sea lanes
-   * embark at the nearest navigable water cell of each port — non-coastal
-   * ports return null and get no maritime lane at all. Over-winding results
-   * (sinuosity > 4) are retried on a relaxed cost surface, trading terrain
-   * fidelity for a saner line.
+   *
+   * Land routes try three policies in order: (0) no water at all, (1) lakes
+   * passable as a costly causeway, (2) the sea too, as a ferry hop across a
+   * strait — so settlements separated by water still connect, paying the
+   * shortest/narrowest crossing instead of a fantasy straight line. Sea
+   * lanes embark at the nearest navigable water cell of each port;
+   * non-coastal ports return null and get no maritime lane at all.
+   * Over-winding results are retried on a relaxed cost surface that keeps
+   * mountains impassable-ish but stops chasing every cheap valley ribbon.
    */
   findRoute(start: Pt, end: Pt, isSeaLane = false): RoutePathResult | null {
     let a = start;
@@ -216,9 +244,21 @@ export class RoutePathfinder {
       if (e.snapped) snapE = e.pt;
     }
 
-    const direct = this.astar(a, b, isSeaLane, false, 1);
-    const path = direct ?? (!isSeaLane ? this.astar(a, b, isSeaLane, true, 1) : null);
-    const usedCauseway = !direct && !!path;
+    let direct = this.astar(a, b, isSeaLane, 0, 1);
+    let policy = 0;
+    if (!direct && !isSeaLane) {
+      const p1 = this.astar(a, b, false, 1, 1);
+      if (p1) {
+        direct = p1;
+        policy = 1;
+      } else {
+        const p2 = this.astar(a, b, false, 2, 1);
+        if (p2) {
+          direct = p2;
+          policy = 2;
+        }
+      }
+    }
 
     const decorate = (wp: Pt[]): Pt[] => {
       let out = wp;
@@ -228,25 +268,35 @@ export class RoutePathfinder {
     };
 
     let waypoints: Pt[];
-    if (path) {
-      waypoints = decorate(path);
+    if (direct) {
+      waypoints = decorate(direct);
+      if (policy === 1) this.causewayRoutes++;
+      if (policy === 2) this.ferryRoutes++;
     } else {
       waypoints = this.fallbackArc(start, end);
+      if (!isSeaLane) this.fallbackArcs++;
     }
 
-    let result = this.buildResult(waypoints, usedCauseway, isSeaLane);
+    let result = this.buildResult(waypoints, policy === 1, isSeaLane);
 
     // Straightening retry: a road that chases every cheap valley ribbon can
-    // wind absurdly. Re-run with terrain costs compressed toward flat cost.
-    if (!isSeaLane && result.sinuosity > 4.0) {
-      const straighter = this.astar(a, b, false, false, 0.35) ?? this.astar(a, b, false, true, 0.35);
+    // wind absurdly. Re-run with terrain costs compressed toward flat — but
+    // mountains stay mountains — and keep whichever line is saner.
+    if (!isSeaLane && result.sinuosity > 4.5) {
+      const retryPolicy = policy === 0 ? 0 : 2;
+      const straighter =
+        this.astar(a, b, false, retryPolicy, 0.35) ?? this.astar(a, b, false, 2, 0.35);
       if (straighter) {
-        const alt = this.buildResult(decorate(straighter), usedCauseway, isSeaLane);
-        if (alt.sinuosity < result.sinuosity) result = alt;
+        const alt = this.buildResult(decorate(straighter), policy === 1, isSeaLane);
+        if (alt.sinuosity < result.sinuosity) {
+          result = alt;
+          this.straightened++;
+        }
       }
-      if (result.sinuosity > 4.8) {
+      if (result.sinuosity > 4.9) {
         // Last resort: a near-straight arc beats a ludicrous squiggle.
         result = this.buildResult(this.fallbackArc(start, end), false, isSeaLane);
+        this.straightened++;
       }
     }
 
@@ -353,10 +403,12 @@ export class RoutePathfinder {
 
   /**
    * Core A* over the 8-connected grid. Returns null when no path exists.
-   * `relax` < 1 compresses land terrain costs toward flat 1.0 (impassable
-   * stays impassable) — used by the sinuosity straightening retry.
+   * `waterPolicy`: 0 = no water crossings, 1 = lakes passable at a causeway
+   * toll, 2 = the sea also passable at a ferry toll. `relax` < 1 compresses
+   * land terrain costs toward flat 1.0 (impassable stays impassable, and
+   * mountain-scale costs are preserved) — used by the sinuosity retry.
    */
-  private astar(start: Pt, end: Pt, isSeaLane: boolean, allowLakes: boolean, relax: number): Pt[] | null {
+  private astar(start: Pt, end: Pt, isSeaLane: boolean, waterPolicy: 0 | 1 | 2, relax: number): Pt[] | null {
     const [startC, startR] = this.toGrid(start);
     const [endC, endR] = this.toGrid(end);
 
@@ -421,10 +473,17 @@ export class RoutePathfinder {
     };
 
     const cellCost = (idx: number): number => {
-      if (!isSeaLane && allowLakes && this.lakeCell[idx] === 1) return 9.0; // causeway/ferry toll
       const base = costGrid[idx];
+      if (!isSeaLane && waterPolicy > 0) {
+        if (this.lakeCell[idx] === 1) return 9.0; // causeway toll
+        if (waterPolicy === 2 && base >= 5000 && this.seaCost[idx] < 5000) return 14.0; // ferry toll
+      }
       if (base >= 5000) return base; // impassable stays impassable when relaxed
-      if (relax < 1) return 1 + (base - 1) * relax;
+      if (relax < 1) {
+        // Compose toward flat cost, but keep mountain/glacier-scale penalties
+        // intact — straightening must not route roads through peaks.
+        return base >= 8 ? base : 1 + (base - 1) * relax;
+      }
       return base;
     };
 
@@ -434,7 +493,7 @@ export class RoutePathfinder {
 
     let found = false;
     let iterations = 0;
-    const maxIterations = 40_000;
+    const maxIterations = this.gridCols * this.gridRows * 6;
 
     const dCols = [0, 1, 1, 1, 0, -1, -1, -1];
     const dRows = [-1, -1, 0, 1, 1, 1, 0, -1];
@@ -485,9 +544,11 @@ export class RoutePathfinder {
     }
     rawIndices.reverse();
 
-    // Sample indices into world points (start/end snap to true settlements)
+    // Sample indices into world points (start/end snap to true settlements).
+    // Every cell is kept: the smoothing pass needs the full granularity to
+    // preserve the road's organic weave.
     const waypoints: Pt[] = [start];
-    for (let i = 1; i < rawIndices.length - 1; i += 2) {
+    for (let i = 1; i < rawIndices.length - 1; i++) {
       const c = rawIndices[i] % this.gridCols;
       const r = Math.floor(rawIndices[i] / this.gridCols);
       waypoints.push(this.toWorld(c, r));

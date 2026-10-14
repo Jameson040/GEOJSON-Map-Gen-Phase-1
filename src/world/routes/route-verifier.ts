@@ -108,31 +108,49 @@ export function verifyRouteLayer(
       if (pts.length < 2) continue;
       const stride = Math.max(1, Math.floor(pts.length / 80));
       // Port approaches (both endpoints sit on land by definition) are not
-      // part of the open-water run — exclude samples near either terminus.
+      // part of the open-water run — exclude samples near either terminus,
+      // scaled down for short lanes so they still have water to verify.
       const sA = settlements.find((s) => s.id === r.startSettlementId);
       const sB = settlements.find((s) => s.id === r.endSettlementId);
+      const exclKm = Math.min(40, Math.max(4, r.lengthKm * 0.2));
       const nearEnd = (p: Pt): boolean =>
-        (!!sA && dist(p, sA.point) < kmToUnits(40)) || (!!sB && dist(p, sB.point) < kmToUnits(40));
+        (!!sA && dist(p, sA.point) < kmToUnits(exclKm)) || (!!sB && dist(p, sB.point) < kmToUnits(exclKm));
       let landSamples = 0;
       let samples = 0;
+      let seaRun = 0;
+      let seaGap = 0;
+      let maxSeaRun = 0;
       for (let i = 0; i < pts.length; i += stride) {
-        if (r.type === "sea_lane" && nearEnd(pts[i])) continue;
+        const p = pts[i];
+        const isLand = geo.envAt(p).onLand;
+        if (r.type === "sea_lane" && nearEnd(p)) continue;
         samples++;
-        if (geo.envAt(pts[i]).onLand) landSamples++;
+        if (isLand) landSamples++;
+        if (!isLand) {
+          seaRun++;
+          seaGap = 0;
+          maxSeaRun = Math.max(maxSeaRun, seaRun);
+        } else if (seaRun > 0) {
+          seaGap++;
+          if (seaGap > 1) seaRun = 0;
+        }
       }
       const landRatio = samples > 0 ? landSamples / samples : 0;
       if (r.type === "sea_lane") {
         if (samples === 0) v.push(`${r.name}: sea lane has no open-water samples to verify`);
         else if (landRatio > 0.1) v.push(`${r.name}: sea lane runs on land (${Math.round(landRatio * 100)}% of samples)`);
       } else {
-        if (landRatio < 0.97) v.push(`${r.name}: road leaves the coastline (${Math.round((1 - landRatio) * 100)}% of samples at sea)`);
+        // Roads may hop water briefly (bridge/ford/ferry at the narrowest
+        // going) but must not run along a coast or span a whole bay.
+        if (maxSeaRun > 3) v.push(`${r.name}: road runs at sea for ${maxSeaRun} consecutive samples (ferries hop, they do not sail)`);
+        else if (landRatio < 0.85) v.push(`${r.name}: road is mostly at sea (${Math.round((1 - landRatio) * 100)}% of samples)`);
       }
     }
     push(
       "route_land_sea",
       "placement",
       "Land / Water Compliance",
-      "Land routes stay on land; sea lanes traverse navigable waters (port touch-downs excepted).",
+      "Land routes stay on land (short bridge/ferry hops excepted); sea lanes traverse navigable waters.",
       routes.length,
       v,
       `All routes respect the ${routes.length > 0 ? "coastline" : "region"} — roads on land, lanes at sea.`
