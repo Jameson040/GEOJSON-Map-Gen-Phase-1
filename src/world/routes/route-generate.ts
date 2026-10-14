@@ -125,9 +125,11 @@ export async function generateRouteLayer(
   ) => {
     const key = pairKey(sA.id, sB.id);
     if (connectedPairs.has(key)) return;
-    connectedPairs.add(key);
 
     const pathRes = pathfinder.findRoute(sA.point, sB.point, isSea);
+    if (!pathRes) return; // e.g. inland "port" — no viable maritime lane
+    connectedPairs.add(key);
+
     const straightKm = Math.round(unitsToKm(dist(sA.point, sB.point)) * 10) / 10;
     const sinuosity = straightKm > 0 ? Math.round((pathRes.lengthKm / straightKm) * 100) / 100 : 1;
     const tradeGoods = associateGoods(sA, sB, resources);
@@ -150,6 +152,7 @@ export async function generateRouteLayer(
       paved,
       bridgesCount: pathRes.bridgesCount,
       mountainPassesCount: pathRes.mountainPassesCount,
+      lakeCrossings: pathRes.lakeCrossings,
       tradeGoods,
       lodZoom,
     };
@@ -195,6 +198,43 @@ export async function generateRouteLayer(
         if (peer.d <= 350) {
           addRoute(cA, peer.city, "highway", true, 0, false);
         }
+      }
+    }
+
+    // Relay rule: two cities too far apart for a direct trunk (350–700 km)
+    // are joined THROUGH an intermediate settlement near the straight
+    // corridor — roads divert to (and through) the wayside city instead of
+    // spanning the empty distance. Both legs must stay within the trunk cap
+    // and the detour must remain sane.
+    const farPairs: { a: Settlement; b: Settlement; d: number }[] = [];
+    for (let i = 0; i < cities.length; i++) {
+      for (let j = i + 1; j < cities.length; j++) {
+        const d = unitsToKm(dist(cities[i].point, cities[j].point));
+        if (d > 350 && d <= 700) farPairs.push({ a: cities[i], b: cities[j], d });
+      }
+    }
+    farPairs.sort((x, y) => y.d - x.d || x.a.id.localeCompare(y.a.id));
+
+    const relayHubs = [...cities, ...towns];
+    for (const pair of farPairs) {
+      const key = pairKey(pair.a.id, pair.b.id);
+      if (connectedPairs.has(key)) continue;
+      let best: { hub: Settlement; detour: number } | null = null;
+      for (const hub of relayHubs) {
+        if (hub.id === pair.a.id || hub.id === pair.b.id) continue;
+        const legA = unitsToKm(dist(pair.a.point, hub.point));
+        const legB = unitsToKm(dist(hub.point, pair.b.point));
+        if (legA > 350 || legB > 350) continue;
+        const detour = legA + legB - pair.d;
+        if (detour > 0.55 * pair.d) continue; // absurd dog-leg, skip
+        const rank = -TIER_RANK[hub.tier];
+        const score = detour * 1000 + rank; // prefer short detour, then higher tier
+        const bestScore = best ? best.detour * 1000 - TIER_RANK[best.hub.tier] : Infinity;
+        if (score < bestScore) best = { hub, detour };
+      }
+      if (best) {
+        addRoute(pair.a, best.hub, "highway", true, 0, false);
+        addRoute(best.hub, pair.b, "highway", true, 0, false);
       }
     }
   }

@@ -41,6 +41,8 @@ export interface RouteFeature {
   bridgesCount: number;
   /** Mountain saddles traversed. */
   mountainPassesCount: number;
+  /** Lake crossings (causeways or ferry stretches) — zero when the road went around. */
+  lakeCrossings: number;
   /** Trade goods that flow along this route. */
   tradeGoods: string[];
   /** Minimum camera zoom level to render this route (0 for highways, 1.5 for byways). */

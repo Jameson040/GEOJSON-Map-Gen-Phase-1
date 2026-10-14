@@ -1,6 +1,9 @@
-import type { GeneratedRegion, VerificationCheck, VerificationReport } from "../types";
+import type { GeneratedRegion, Pt, VerificationCheck, VerificationReport } from "../types";
 import type { RouteFeature } from "./route-types";
 import type { Settlement } from "../human/human-types";
+import { BioEnvReader } from "../bio/bio-env";
+import { unitsToKm, kmToUnits } from "../constants";
+import { dist } from "../geom";
 
 // ---------------------------------------------------------------------------
 // LAYER 6 VERIFIER — INVARIANTS FOR ROADS & TRADE ROUTES
@@ -10,6 +13,8 @@ import type { Settlement } from "../human/human-types";
 //   2. Land routes stay on land; sea lanes traverse navigable waters.
 //   3. Lower frozen layers (Geography L1, Biosphere L3, Settlements L4) are untouched.
 //   4. Sinuosity is physically reasonable (no infinite loops or negative lengths).
+//   5. Water discipline: roads cross rivers briefly (bridge/ford) instead of
+//      running along the channel, and do not span wide lakes.
 // ---------------------------------------------------------------------------
 
 export function verifyRouteLayer(
@@ -94,7 +99,126 @@ export function verifyRouteLayer(
     );
   }
 
-  // 3. Layer Immutability Contract
+  // 3. Land / Water Compliance (sampled against the frozen geography)
+  {
+    const geo = new BioEnvReader(region);
+    const v: string[] = [];
+    for (const r of routes) {
+      const pts = r.points;
+      if (pts.length < 2) continue;
+      const stride = Math.max(1, Math.floor(pts.length / 80));
+      // Port approaches (both endpoints sit on land by definition) are not
+      // part of the open-water run — exclude samples near either terminus.
+      const sA = settlements.find((s) => s.id === r.startSettlementId);
+      const sB = settlements.find((s) => s.id === r.endSettlementId);
+      const nearEnd = (p: Pt): boolean =>
+        (!!sA && dist(p, sA.point) < kmToUnits(40)) || (!!sB && dist(p, sB.point) < kmToUnits(40));
+      let landSamples = 0;
+      let samples = 0;
+      for (let i = 0; i < pts.length; i += stride) {
+        if (r.type === "sea_lane" && nearEnd(pts[i])) continue;
+        samples++;
+        if (geo.envAt(pts[i]).onLand) landSamples++;
+      }
+      const landRatio = samples > 0 ? landSamples / samples : 0;
+      if (r.type === "sea_lane") {
+        if (samples === 0) v.push(`${r.name}: sea lane has no open-water samples to verify`);
+        else if (landRatio > 0.1) v.push(`${r.name}: sea lane runs on land (${Math.round(landRatio * 100)}% of samples)`);
+      } else {
+        if (landRatio < 0.97) v.push(`${r.name}: road leaves the coastline (${Math.round((1 - landRatio) * 100)}% of samples at sea)`);
+      }
+    }
+    push(
+      "route_land_sea",
+      "placement",
+      "Land / Water Compliance",
+      "Land routes stay on land; sea lanes traverse navigable waters (port touch-downs excepted).",
+      routes.length,
+      v,
+      `All routes respect the ${routes.length > 0 ? "coastline" : "region"} — roads on land, lanes at sea.`
+    );
+  }
+
+  // 4. River & Lake Crossing Discipline
+  {
+    const geo = new BioEnvReader(region);
+    const v: string[] = [];
+    for (const r of routes) {
+      if (r.type === "sea_lane") continue;
+      const pts = r.points;
+      if (pts.length < 2) continue;
+      const stride = Math.max(1, Math.floor(pts.length / 80));
+
+      // Walk the sampled points; a crossing is a contiguous run of channel
+      // (or lake) samples, tolerating a single off-sample from smoothing.
+      let channelRun = 0;
+      let channelGap = 0;
+      let lakeRun = 0;
+      let lakeGap = 0;
+      let maxChannelRun = 0;
+      let maxLakeRun = 0;
+      let riverRuns = 0;
+      let lakeRuns = 0;
+
+      for (let i = 0; i < pts.length; i += stride) {
+        const p = pts[i];
+        const riv = geo.nearestRiverInfo(p);
+        let inChannel = false;
+        if (riv) {
+          const halfWidthKm = (4.0 * Math.sqrt(Math.max(1, riv.dischargeM3s))) / 2 / 1000;
+          inChannel = unitsToKm(riv.distUnits) <= Math.max(0.4, halfWidthKm);
+        }
+        const inLake = geo.pointInLake(p);
+
+        if (inChannel) {
+          if (channelRun === 0 && channelGap === 0) riverRuns++;
+          channelRun++;
+          channelGap = 0;
+        } else if (channelRun > 0) {
+          channelGap++;
+          if (channelGap > 1) {
+            maxChannelRun = Math.max(maxChannelRun, channelRun);
+            channelRun = 0;
+            channelGap = 0;
+          }
+        }
+        if (inLake) {
+          if (lakeRun === 0 && lakeGap === 0) lakeRuns++;
+          lakeRun++;
+          lakeGap = 0;
+        } else if (lakeRun > 0) {
+          lakeGap++;
+          if (lakeGap > 1) {
+            maxLakeRun = Math.max(maxLakeRun, lakeRun);
+            lakeRun = 0;
+            lakeGap = 0;
+          }
+        }
+      }
+      maxChannelRun = Math.max(maxChannelRun, channelRun);
+      maxLakeRun = Math.max(maxLakeRun, lakeRun);
+
+      // A bridge/ford is a handful of samples; dozens of samples in the
+      // channel means the road runs down the river itself.
+      if (maxChannelRun > 3) {
+        v.push(`${r.name}: runs along a river channel for ${maxChannelRun} consecutive samples (bridges cross, they do not follow)`);
+      }
+      if (maxLakeRun > 2) {
+        v.push(`${r.name}: spans a lake for ${maxLakeRun} consecutive samples (causeways only, no lake-crossing roads)`);
+      }
+    }
+    push(
+      "route_water_discipline",
+      "placement",
+      "River & Lake Crossing Discipline",
+      "Roads cross rivers briefly (bridge at the narrowest going) and never run along the channel or across wide lakes.",
+      routes.length,
+      v,
+      `Every road crosses water like a bridge, not a boat.`
+    );
+  }
+
+  // 5. Layer Immutability Contract
   {
     const v: string[] = [];
     if (region.features.length !== geoCountBefore) {

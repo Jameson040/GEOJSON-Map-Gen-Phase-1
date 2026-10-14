@@ -54,6 +54,52 @@ a five-continent suture chain can merge into a supercontinent wider than the
 globe (no meridian can be seam-clean), and a blob continent boxed between
 neighbours on both sides can be impossible to stretch.
 
+## Route-Layer Audit & Water-Discipline Pass (2026-10-14, same session)
+
+User-reported symptom: a road visibly running *inside* a river. Audit of
+`src/world/routes/` confirmed the suspicion and found the route finetuner
+never inspected geometry at all. Fixed in `route-pathfinder.ts`,
+`route-generate.ts`, `route-verifier.ts` (+ additive river/lake queries in
+`bio/bio-env.ts`):
+
+- **River crossings now cost, scaled by river size.** The old cost grid gave
+  river cells the *cheapest* terrain (×0.65 valley discount applied at
+  `freshKm ≤ 4`, largest in the channel), so A* happily rode down the middle
+  of rivers and crossed them anywhere for free. Now the channel pays a
+  per-cell toll that scales with Strahler order (fording a headwater ≈ ×2,
+  bridging an order-5 trunk ≈ ×20), while the *valley band beside* the river
+  keeps the favourable ×0.7. Because the toll is paid per cell, paths cross
+  at the narrowest going and near-perpendicular, and never follow a big
+  river — exactly the requested behaviour at grid resolution.
+- **Bridge counts are real.** `bridgesCount` was a crude "river-adjacent
+  cells ÷ 3" estimate; it is now the number of contiguous channel runs along
+  the final smoothed polyline. Same for mountain passes and (new)
+  `lakeCrossings`.
+- **Lakes are no longer roads.** `onLand` comes from the land mask, so lake
+  interiors were walkable land (and even counted as bridges). Lake cells are
+  now impassable; only when no detour exists does a second A* attempt allow
+  a costly causeway/ferry, reported as `lakeCrossings`.
+- **Far cities relay through wayside settlements.** City pairs 350–700 km
+  apart were simply never connected. They now join via the best intermediate
+  hub (shortest detour, both legs ≤ 350 km, detour ≤ 55% overhead).
+- **Seizure of `Math.random()` in the A* fallback** — a seeded-determinism
+  violation. The fallback arc is now derived from the region seed. Verified:
+  18/18 seeds regenerate byte-identical route layers (bar timing fields).
+- **Sea lanes snap to water.** Ports live on land cells; lanes now embark at
+  the nearest navigable cell (≤ 3 cells) and inland "ports" get no lane.
+- **Sinuosity guard.** Valley-chasing could wind a road to sinuosity 8.9;
+  over 4.0 the path is re-found on a relaxed cost surface, with a
+  near-straight arc as last resort.
+- **Verifier now checks what its header always claimed.** Added
+  `route_land_sea` (roads on land, lanes at sea, port approaches excepted)
+  and `route_water_discipline` (no route may run along a river channel or
+  span a wide lake). Both run before and after finetuning.
+
+Validation: check/smoke/verify all green, golden seeds 62/62 (Tier-1
+byte-identical), build OK, and an 18-seed sweep (6 known + 12 fresh) with
+zero verifier violations, zero river-riding (max consecutive channel sample
+run = 1), and real bridge counts (46–133 per region).
+
 ## Confirmed Problems Repaired in This Pass
 
 - **Cadastre JIT cache staleness (correctness bug):** the cache key was
