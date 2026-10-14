@@ -11,6 +11,12 @@ const __dirname = path.dirname(__filename);
 // https://vite.dev/config/
 export default defineConfig({
   plugins: [react(), tailwindcss(), viteSingleFile()],
+  // Dev-server only (does not affect `vite build`): bind all interfaces and
+  // accept the sandbox preview proxy host so the live viewer is reachable.
+  server: {
+    host: true,
+    allowedHosts: true,
+  },
   resolve: {
     alias: {
       "@": path.resolve(__dirname, "src"),
