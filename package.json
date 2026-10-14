@@ -10,6 +10,8 @@
     "check": "tsx scripts/check-project.ts",
     "smoke": "tsx scripts/check-project.ts --smoke terra-novus",
     "verify": "tsx scripts/verify-world.ts",
+    "seeds": "tsx scripts/golden-seeds.ts",
+    "seeds:update": "tsx scripts/golden-seeds.ts --update",
     "backup": "node scripts/create-backup.mjs"
   },
   "dependencies": {

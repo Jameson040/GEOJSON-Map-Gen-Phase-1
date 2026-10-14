@@ -15,7 +15,44 @@ All commands below pass with zero failures:
   layer — including a v1-checkpoint backward-compatibility read.
 - `npm run verify` — full multi-size-class, multi-detail-level CLI verifier:
   ALL LAYERS VERIFIED, 0 violations after finetune everywhere.
+- `npm run seeds` — **golden-seed harness** (62 locked seeds): all pass, and
+  every previously-passing seed keeps a byte-identical cartographic output
+  hash. A fresh 200-seed sweep measures ~98% Tier-1 pass rate (baseline
+  before this pass: ~65%).
 - `npm run build` — production single-file build.
+
+## Seed-Robustness Pass (2026-10-14, same session)
+
+Measured baseline: only ~65% of random seeds passed the Tier-1 verifier; the
+dominant failure was *"landmass touches the 2D antimeridian seam"* (present in
+every failing seed), plus suture-merged continents dropping below the required
+three, seas swallowed by coastline growth, near-circular continent blobs, and
+rare ring overlaps/polar overshoots. Root causes found and fixed in
+`src/world/tier1-finetune.ts`:
+
+- **Seam picker now returns clearance** (`chooseOceanSeamMeasured`). Dense
+  planets blanket every meridian, so no ocean-only antimeridian exists; the
+  picker was silently returning the least-bad longitude with land on it.
+- **`ringsIntersectGlobe` blind spot** (pre-existing bug): it tested only the
+  nearest longitude image, missing overlaps between two landmasses whose
+  wrapping tails collide. Now tests the three images around the reference
+  centroid. This is also why the STEP A suture had left overlapping continents
+  un-merged.
+- **Conditional repairs**, each firing only on its own verifier failure so
+  passing planets stay byte-identical: `openSeamCorridor` (monotone
+  one-sided coastline pullback opens a strait at the antimeridian, with
+  translate/drop fallbacks), `ensureThreeContinents` (promotes the largest
+  well-shaped islands after continent-merging sutures), `separateOverlappingLands`
+  (squeeze/translate/latitude-shift ladder, run before and after the seam pass),
+  `repairContinentBlobs` (area-preserving stretch; post-seam variants never
+  close the opened strait), `repairPolarOvershoot` (minimal y-compression or
+  clamp for rings past a pole), `relocateSeasOnLand` (moves swallowed sea
+  basins to the nearest open water, ring kept inside polar bounds).
+
+Residual known failures (~2% of random seeds, all pre-existing conditions):
+a five-continent suture chain can merge into a supercontinent wider than the
+globe (no meridian can be seam-clean), and a blob continent boxed between
+neighbours on both sides can be impossible to stretch.
 
 ## Confirmed Problems Repaired in This Pass
 

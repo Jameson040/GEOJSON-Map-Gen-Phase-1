@@ -54,8 +54,21 @@ The pipeline is deterministic per seed and fully scriptable:
 npm run check      # static project health (files, strict TS, imports, gate, registry, cache keys)
 npm run smoke      # + executes the full seven-layer pipeline once and round-trips a checkpoint
 npm run verify     # CLI world verifier: every land-size class × detail levels × layers
+npm run seeds      # golden-seed harness: 62 locked seeds, byte-exact for passing worlds
+npm run seeds:update  # re-lock the snapshot after a deliberate generator/finetune change
 npm run backup     # filesystem backup of the source tree with checksums
 ```
+
+**Golden-seed harness.** `scripts/golden-seeds.ts` locks a fixed corpus (the
+60-seed `seed-robustness-corpus` sweep plus `terra-novus` and `meridian-3`) to
+`scripts/golden-seeds.json`. Every seed that previously passed must keep the
+exact same cartographic content hash — any byte difference fails CI — while a
+previously-failing seed may change freely (improvements are reported as INFO).
+The Tier-1 shape-finetune repairs (antimeridian strait, continent promotion,
+blob stretch, overlap separation, polar clamp, sea relocation) all trigger
+*exclusively* on their own verifier failure conditions, so passing planets are
+reproduced byte-for-byte. Current state: 62/62 corpus seeds pass; a fresh
+200-seed sweep measures ~98% (was ~65% before the robustness pass).
 
 Any failure exits non-zero — these are the same invariants the app enforces
 at runtime. See `BACKUP.md` for the full backup/restore story (browser source

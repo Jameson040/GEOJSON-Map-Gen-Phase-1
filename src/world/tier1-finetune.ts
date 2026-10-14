@@ -394,9 +394,18 @@ function alignRingX(ring: Pt[], referenceX: number): Pt[] {
 
 /** Ring intersection on a cylindrical globe, not a rectangular sheet. */
 function ringsIntersectGlobe(a: Pt[], b: Pt[]): boolean {
-  const aa = a;
-  const bb = alignRingX(b, polygonCentroid(a)[0]);
-  return ringsIntersect(aa, bb, bboxOfRing(aa), bboxOfRing(bb));
+  // Two rings can overlap through either adjacent longitude image when a
+  // long tail wraps around the antimeridian, so the nearest image alone is
+  // not enough — test the three images around a's centroid.
+  const ref = polygonCentroid(a)[0];
+  const cx = polygonCentroid(b)[0];
+  const k = Math.round((ref - cx) / PLANET_WIDTH);
+  const ba = bboxOfRing(a);
+  for (const kk of [k, k - 1, k + 1]) {
+    const bb = shiftRingX(b, kk * PLANET_WIDTH);
+    if (ringsIntersect(a, bb, ba, bboxOfRing(bb))) return true;
+  }
+  return false;
 }
 
 function pointInRingGlobe(p: Pt, ring: Pt[]): boolean {
@@ -801,31 +810,673 @@ function largestExteriorRing(geom: any): Pt[] | null {
 
 const fmtArea = (a: number) => (a < 100 ? Math.round(a * 10) / 10 : Math.round(a));
 
-/** Find the longitude furthest from every final landmass: an ocean-only seam. */
-function chooseOceanSeam(lands: Land[]): number {
-  const intervals = lands.map((l) => {
-    const cx = polygonCentroid(l.ring)[0];
-    const r = alignRingX(l.ring, cx);
-    const b = bboxOfRing(r);
-    return { cx, min: b.minX, max: b.maxX };
-  });
+/** Contiguous longitude span of a landmass, in the image around its centroid. */
+function landInterval(l: Land): { cx: number; min: number; max: number } {
+  const cx = polygonCentroid(l.ring)[0];
+  const r = alignRingX(l.ring, cx);
+  const b = bboxOfRing(r);
+  return { cx, min: b.minX, max: b.maxX };
+}
+
+/**
+ * Distance from longitude `s` to a landmass interval: positive when `s` lies in
+ * ocean, negative when the landmass covers `s` (the depth of the cut).
+ */
+function intervalClearance(it: { cx: number; min: number; max: number }, s: number): number {
+  const q = s + Math.round((it.cx - s) / PLANET_WIDTH) * PLANET_WIDTH;
+  return q < it.min ? it.min - q : q > it.max ? q - it.max : -Math.min(q - it.min, it.max - q);
+}
+
+/** Find the longitude furthest from every landmass: an ocean-only seam. */
+function chooseOceanSeamMeasured(lands: Land[]): { seamX: number; clearance: number } {
+  const intervals = lands.map(landInterval);
   let bestX = 0;
   let bestClearance = -Infinity;
   const samples = 1440; // quarter-degree resolution
   for (let i = 0; i < samples; i++) {
     const s = (i / samples) * PLANET_WIDTH;
     let clearance = Infinity;
-    for (const it of intervals) {
-      const q = s + Math.round((it.cx - s) / PLANET_WIDTH) * PLANET_WIDTH;
-      const d = q < it.min ? it.min - q : q > it.max ? q - it.max : -Math.min(q - it.min, it.max - q);
-      clearance = Math.min(clearance, d);
-    }
+    for (const it of intervals) clearance = Math.min(clearance, intervalClearance(it, s));
     if (clearance > bestClearance) {
       bestClearance = clearance;
       bestX = s;
     }
   }
-  return bestX;
+  return { seamX: bestX, clearance: bestClearance };
+}
+
+// ---------------------------------------------------------------------------
+// SEAM CORRIDOR REPAIR
+//
+// Dense planets can blanket every meridian with land, so no ocean-only
+// antimeridian exists and the verifier fails ("landmass touches the 2D
+// antimeridian seam"). Because the seam picker maximises clearance, the least
+// covered meridian is usually cut only a few dozen units deep — so a small,
+// local coastline pullback is enough to open a strait.
+//
+// The pullback compresses one side of the blocking landmass toward its
+// centroid (a monotone longitude remap: vertex order can never invert, so
+// rings stay simple, and a landmass can only shrink, so it cannot collide
+// with a neighbour). Narrow landmasses centred on the seam are translated
+// into open water instead; tiny islets that cannot be moved anywhere are
+// dropped. Every result is still validated (island / sea centroids) before it
+// is accepted, and the whole repair runs ONLY when the current seam fails the
+// verifier tolerance — passing planets are byte-identical to before.
+// ---------------------------------------------------------------------------
+const SEAM_FAIL_CLEARANCE = 1 + 1e-9; // verifier: rings must clear x=0/W by more than 1
+const SEAM_TARGET_CLEARANCE = 6; // strait half-width to aim for once repairing
+const SEAM_MAX_ITERATIONS = 24;
+
+/** One-sided longitude compression toward cx (side −1 = left, +1 = right). */
+function squeezeRingXSide(ring: Pt[], cx: number, f: number, side: -1 | 1): Pt[] {
+  return ring.map(([x, y]) => {
+    if (side === -1 && x < cx) return [cx + (x - cx) * f, y] as Pt;
+    if (side === 1 && x > cx) return [cx + (x - cx) * f, y] as Pt;
+    return [x, y] as Pt;
+  });
+}
+
+function republishLand(
+  l: Land,
+  featureById: Map<string, MapFeature>,
+  rawDisplayById: Map<string, MapFeature> | null,
+  isRaw: boolean,
+): void {
+  const nf: MapFeature = {
+    ...l.f,
+    geometry: { type: "Polygon", coordinates: [l.ring] },
+    bbox: bboxOfRing(l.ring),
+    properties: {
+      ...l.f.properties,
+      areaKm2: fmtArea(areaUnitsToKm2(Math.abs(signedArea(l.ring)))),
+    },
+  };
+  if (isRaw) rawDisplayById?.set(nf.id, nf);
+  else featureById.set(nf.id, nf);
+  l.f = nf;
+}
+
+interface SeamCorridorResult {
+  squeezed: number;
+  translated: number;
+  dropped: string[];
+  rawDropped: string[];
+}
+
+interface LandMoveCounters {
+  squeezed: number;
+  translated: number;
+  dropped: string[];
+  rawDropped: string[];
+}
+
+const overlapsAnyLand = (ring: Pt[], pool: Land[], self: Land): boolean => {
+  for (const o of pool) {
+    if (o === self || o.f.id === self.f.id) continue;
+    if (ringsIntersectGlobe(ring, o.ring)) return true;
+  }
+  return false;
+};
+
+const swallowsIsland = (ring: Pt[], pool: Land[]): boolean => {
+  // Island centroids must never be engulfed (no later repair fixes that);
+  // sea basins are allowed to end up on land here — relocateSeasOnLand()
+  // moves them to open water afterwards.
+  for (const o of pool) {
+    if (o.isContinent) continue;
+    if (pointInRingGlobe(centroidOf(o.ring), ring)) return true;
+  }
+  return false;
+};
+
+/**
+ * Pull landmass `l` away from longitude `s` (or from the interval edge at `s`
+ * when de-overlapping) until it clears `s` by `margin`. Squeeze first, then a
+ * progressive translation scan, then — for tiny islets — removal. Returns
+ * false when nothing worked.
+ */
+function pullLandFromMeridian(
+  l: Land,
+  s: number,
+  pool: Land[],
+  finalLands: Land[],
+  featureById: Map<string, MapFeature>,
+  rawDisplayById: Map<string, MapFeature>,
+  isRaw: boolean,
+  margin: number,
+  removed: Set<string>,
+  rawDrop: Set<string>,
+  counters: LandMoveCounters,
+  seamGuard: number | null,
+): boolean {
+  const it = landInterval(l);
+  const q = s + Math.round((it.cx - s) / PLANET_WIDTH) * PLANET_WIDTH;
+
+  const commit = (nr: Pt[]): void => {
+    l.ring = nr;
+    l.bbox = bboxOfRing(nr);
+    l.areaKm2 = areaUnitsToKm2(Math.abs(signedArea(nr)));
+    republishLand(l, featureById, rawDisplayById, isRaw);
+  };
+
+  // 1. Squeeze the near/facing edge back past the meridian.
+  const squeeze = (side: -1 | 1, edge: number, target: number): boolean => {
+    if (side === -1 && target >= it.cx - 2) return false;
+    if (side === 1 && target <= it.cx + 2) return false;
+    const f = (target - it.cx) / (edge - it.cx);
+    if (!(f > 0.55) || f >= 1) return false;
+    const cx = polygonCentroid(l.ring)[0];
+    const nr = squeezeRingXSide(l.ring, cx, f, side);
+    // A shrinking span still cannot be trusted on concave coastlines: the
+    // compressed shore can cross a neighbour tucked into a bay.
+    if (overlapsAnyLand(nr, pool, l)) return false;
+    if (!isRaw && swallowsIsland(nr, finalLands)) return false;
+    commit(nr);
+    counters.squeezed++;
+    return true;
+  };
+  if (q <= it.min + (it.max - it.min) / 2) {
+    if (squeeze(-1, it.min, q + margin)) return true;
+  } else {
+    if (squeeze(1, it.max, q - margin)) return true;
+  }
+
+  // 2. Translation: nearest clear position first, then progressively farther.
+  const tryTranslate = (dx: number): boolean => {
+    if (Math.abs(dx) < 1e-6) return false;
+    const nr = l.ring.map(([x, y]) => [x + dx, y] as Pt);
+    if (overlapsAnyLand(nr, pool, l)) return false;
+    if (!isRaw && swallowsIsland(nr, finalLands)) return false;
+    if (
+      seamGuard !== null &&
+      intervalClearance({ cx: it.cx + dx, min: it.min + dx, max: it.max + dx }, seamGuard) < margin + 2
+    ) {
+      return false;
+    }
+    commit(nr);
+    counters.translated++;
+    return true;
+  };
+  const rightDx = q + margin + 1 - it.min; // land ends up fully right of s
+  const leftDx = q - margin - 1 - it.max; // land ends up fully left of s
+  const candidates: number[] = [rightDx, leftDx];
+  for (let extra = 40; extra <= 600; extra += 40) candidates.push(rightDx + extra, leftDx - extra);
+  for (const dx of candidates) if (tryTranslate(dx)) return true;
+
+  // 3. Last resort: drop a tiny islet from its view.
+  if (!l.isContinent && l.areaKm2 < 5_000) {
+    if (isRaw) {
+      rawDrop.add(l.f.id);
+      counters.rawDropped.push(l.f.properties.name);
+    } else {
+      removed.add(l.f.id);
+      counters.dropped.push(l.f.properties.name);
+    }
+    return true;
+  }
+  return false;
+}
+
+function openSeamCorridor(
+  finalLands: Land[],
+  rawLands: Land[],
+  featureById: Map<string, MapFeature>,
+  rawDisplayById: Map<string, MapFeature>,
+  removed: Set<string>,
+  rawDrop: Set<string>,
+  log: ConflictRecord[],
+): SeamCorridorResult {
+  const exhausted = new Set<Land>();
+  const counters: LandMoveCounters = { squeezed: 0, translated: 0, dropped: [], rawDropped: [] };
+  const T = SEAM_TARGET_CLEARANCE;
+
+  let prev = -Infinity;
+  let stale = 0;
+  for (let iter = 0; iter < SEAM_MAX_ITERATIONS; iter++) {
+    const all = [
+      ...finalLands.filter((l) => !removed.has(l.f.id)),
+      ...rawLands.filter((l) => !rawDrop.has(l.f.id)),
+    ];
+    const pick = chooseOceanSeamMeasured(all);
+    if (pick.clearance >= T) break;
+    if (pick.clearance <= prev + 1e-6) {
+      if (++stale >= 3) break;
+    } else stale = 0;
+    prev = pick.clearance;
+
+    // Blockers at this seam, biggest first (deterministic order).
+    const blockers = all
+      .filter((l) => {
+        if (exhausted.has(l)) return false;
+        if (removed.has(l.f.id) || rawDrop.has(l.f.id)) return false;
+        return intervalClearance(landInterval(l), pick.seamX) < T;
+      })
+      .sort((a, b) => b.areaKm2 - a.areaKm2 || (a.f.id < b.f.id ? -1 : 1));
+    if (!blockers.length) break;
+    let acted = false;
+    for (const b of blockers) {
+      const isRaw = rawLands.includes(b) && !finalLands.includes(b);
+      const ok = pullLandFromMeridian(
+        b,
+        pick.seamX,
+        isRaw ? rawLands : finalLands,
+        finalLands,
+        featureById,
+        rawDisplayById,
+        isRaw,
+        T,
+        removed,
+        rawDrop,
+        counters,
+        null,
+      );
+      if (ok) acted = true;
+      else exhausted.add(b);
+    }
+    if (!acted) break;
+  }
+
+  log.push({
+    kind: "reshape",
+    tier: 1,
+    description: `No meridian was free of land, so the antimeridian was opened as a narrow strait: ${counters.squeezed} coastline pullback${
+      counters.squeezed === 1 ? "" : "s"
+    }${
+      counters.translated ? `, ${counters.translated} landmass shift${counters.translated === 1 ? "" : "s"}` : ""
+    }${
+      counters.dropped.length ? `, islets ${counters.dropped.join(", ")} absorbed by the strait` : ""
+    }${
+      counters.rawDropped.length ? `, raw silhouettes ${counters.rawDropped.join(", ")} dropped` : ""
+    }. No landmass is cut by the 2D map edge.`,
+  });
+  return {
+    squeezed: counters.squeezed,
+    translated: counters.translated,
+    dropped: counters.dropped,
+    rawDropped: counters.rawDropped,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// OVERLAP SEPARATION — reshape/accretion growth can leave two final
+// landmasses with crossing coastlines that the earlier suture passes missed.
+// The smaller one is pulled off the larger's facing edge (same squeeze /
+// translate / drop ladder as the seam repair). No-op when nothing overlaps.
+// ---------------------------------------------------------------------------
+function separateOverlappingLands(
+  finalLands: Land[],
+  featureById: Map<string, MapFeature>,
+  rawDisplayById: Map<string, MapFeature>,
+  removed: Set<string>,
+  rawDrop: Set<string>,
+  seamGuard: number | null,
+  log: ConflictRecord[],
+): void {
+  const counters: LandMoveCounters = { squeezed: 0, translated: 0, dropped: [], rawDropped: [] };
+  const stuck = new Set<string>();
+  const pairKey = (a: Land, b: Land) => (a.f.id < b.f.id ? `${a.f.id}|${b.f.id}` : `${b.f.id}|${a.f.id}`);
+  const active = () => finalLands.filter((l) => !removed.has(l.f.id));
+
+  for (let round = 0; round < 12; round++) {
+    const lands = active().sort((a, b) => b.areaKm2 - a.areaKm2 || (a.f.id < b.f.id ? -1 : 1));
+    let pair: [Land, Land] | null = null;
+    for (let i = 0; i < lands.length && !pair; i++) {
+      for (let j = i + 1; j < lands.length; j++) {
+        if (stuck.has(pairKey(lands[i], lands[j]))) continue;
+        if (ringsIntersectGlobe(lands[i].ring, lands[j].ring)) {
+          pair = [lands[i], lands[j]];
+          break;
+        }
+      }
+    }
+    if (!pair) break;
+    const [big, small] =
+      pair[0].areaKm2 >= pair[1].areaKm2 ? [pair[0], pair[1]] : [pair[1], pair[0]];
+    const itBig = landInterval(big);
+    const itSmall = landInterval(small);
+    // Push the small land off the big one's facing interval edge.
+    const s = itSmall.cx >= itBig.cx ? itBig.max : itBig.min;
+    let ok = pullLandFromMeridian(
+      small,
+      s,
+      active(),
+      active(),
+      featureById,
+      rawDisplayById,
+      false,
+      SEAM_TARGET_CLEARANCE,
+      removed,
+      rawDrop,
+      counters,
+      seamGuard,
+    );
+    // When no longitude can separate them (one landmass sits deep inside the
+    // other's span), try a latitude shift — it never disturbs the strait.
+    if (!ok) {
+      const tryShiftY = (dy: number): boolean => {
+        const nr = small.ring.map(([x, y]) => [x, y + dy] as Pt);
+        const bb = bboxOfRing(nr);
+        if (bb.minY < 4 || bb.maxY > PLANET_HEIGHT - 4) return false;
+        if (overlapsAnyLand(nr, active(), small)) return false;
+        if (swallowsIsland(nr, active())) return false;
+        small.ring = nr;
+        small.bbox = bb;
+        republishLand(small, featureById, rawDisplayById, false);
+        return true;
+      };
+      for (let dy = 60; dy <= 420 && !ok; dy += 60) {
+        if (tryShiftY(dy)) ok = true;
+        else if (tryShiftY(-dy)) ok = true;
+      }
+      if (ok) counters.translated++;
+    }
+    if (!ok) stuck.add(pairKey(big, small));
+  }
+
+  if (counters.squeezed + counters.translated + counters.dropped.length) {
+    log.push({
+      kind: "displace",
+      tier: 1,
+      description: `${counters.squeezed + counters.translated} coastline adjustment${
+        counters.squeezed + counters.translated === 1 ? "" : "s"
+      } separated overlapping landmasses${
+        counters.dropped.length ? `; islets ${counters.dropped.join(", ")} absorbed` : ""
+      }.`,
+    });
+  }
+}
+
+// ---------------------------------------------------------------------------
+// PRESENCE REPAIR — suturing overlapping continents can merge five cratons
+// into one, leaving fewer than the three continents the verifier demands.
+// When that happens, the largest well-shaped islands are promoted to
+// continental status (their raw silhouettes stay islands in the comparison
+// view). Only runs when the count is actually below three.
+// ---------------------------------------------------------------------------
+function ensureThreeContinents(
+  finalLands: Land[],
+  featureById: Map<string, MapFeature>,
+  regionById: Map<string, RegionDescriptor>,
+  records: ShapeLandmassRecord[],
+  log: ConflictRecord[],
+): void {
+  const count = () => finalLands.filter((l) => l.isContinent).length;
+  if (count() >= 3) return;
+  const isBlob = (ring: Pt[]): boolean => {
+    const m = shapeMetrics(ring);
+    return m.aspect < 1.25 && m.solidity > 0.86;
+  };
+  const candidates = finalLands
+    .filter((l) => !l.isContinent)
+    .sort(
+      (a, b) =>
+        Number(isBlob(a.ring)) - Number(isBlob(b.ring)) ||
+        b.areaKm2 - a.areaKm2 ||
+        (a.f.id < b.f.id ? -1 : 1),
+    );
+  const promoted: string[] = [];
+  for (const c of candidates) {
+    if (count() >= 3) break;
+    const nf: MapFeature = {
+      ...c.f,
+      properties: { ...c.f.properties, featureType: "continent" },
+    };
+    featureById.set(c.f.id, nf);
+    c.f = nf;
+    c.isContinent = true;
+    const rd = regionById.get(c.f.id);
+    if (rd) rd.kind = "continent";
+    const rec = records.find((r) => r.id === c.f.id);
+    if (rec) rec.kind = "continent";
+    promoted.push(String(c.f.properties.name));
+  }
+  if (promoted.length) {
+    log.push({
+      kind: "merge",
+      tier: 1,
+      description: `Suturing merged overlapping continents until fewer than three remained; ${
+        promoted.length === 1 ? "the largest island" : "the largest islands"
+      } ${promoted.join(", ")} promoted to continental status to preserve a multi-continent planetary structure.`,
+    });
+  }
+}
+
+// ---------------------------------------------------------------------------
+// REALISM REPAIR — a continent that survives finetuning as a near-circular
+// blob (aspect < 1.25 AND solidity > 0.86) fails the shape-realism check.
+// The fix is an area-preserving balanced stretch (aspect × kx/ky, kx·ky = 1)
+// which keeps solidity invariant and the size class honest. When the seam
+// has already been fixed, only the y axis may be compressed (x extents must
+// not move, or the strait could close again).
+// ---------------------------------------------------------------------------
+function repairContinentBlobs(
+  finalLands: Land[],
+  featureById: Map<string, MapFeature>,
+  removed: Set<string>,
+  log: ConflictRecord[],
+  seamX: number | null,
+): void {
+  const TARGET = 1.35;
+  const isBlob = (ring: Pt[]): boolean => {
+    const m = shapeMetrics(ring);
+    return m.aspect < 1.25 && m.solidity > 0.86;
+  };
+  let fixed = 0;
+  const absorbedIslets: string[] = [];
+  for (const l of finalLands) {
+    if (!l.isContinent || removed.has(l.f.id) || !isBlob(l.ring)) continue;
+    const m = shapeMetrics(l.ring);
+    const [cx, cy] = polygonCentroid(l.ring);
+    // Candidate rings, most faithful first. Pre-seam (seamX = null) the
+    // continent may stretch anywhere (balanced area-preserving affine, with
+    // longitude shifts for crowded spots). Post-seam, only shapes that keep
+    // the seam-side longitude extent fixed are allowed: a y-compression or a
+    // one-sided x-expansion AWAY from the seam, so the opened strait can
+    // never close again.
+    const affine = (ax: number, ay: number, dx = 0): Pt[] =>
+      l.ring.map(([x, y]) => [cx + (x - cx) * ax + dx, cy + (y - cy) * ay] as Pt);
+    const candidates: Array<() => Pt[]> = [];
+    if (seamX === null) {
+      candidates.push(
+        () => affine(Math.sqrt(TARGET / m.aspect), Math.sqrt(m.aspect / TARGET)),
+        () => affine(1, m.aspect / TARGET),
+        () => affine(TARGET / m.aspect, 1),
+      );
+      const ax = Math.sqrt(TARGET / m.aspect);
+      const ay = Math.sqrt(m.aspect / TARGET);
+      for (let dx = 40; dx <= 200; dx += 40) {
+        const shift = dx;
+        candidates.push(() => affine(ax, ay, shift), () => affine(ax, ay, -shift));
+      }
+    } else {
+      candidates.push(() => affine(1, m.aspect / TARGET));
+      // Expand the side facing away from the open strait (seam-side edge fixed).
+      let d = cx - seamX;
+      d -= Math.round(d / PLANET_WIDTH) * PLANET_WIDTH;
+      const side: -1 | 1 = d >= 0 ? 1 : -1;
+      for (const k of [TARGET / m.aspect, 1.25, 1.45]) {
+        const kk = k;
+        candidates.push(() => squeezeRingXSide(l.ring, cx, kk, side));
+        const ky = Math.sqrt(m.aspect / TARGET);
+        candidates.push(() =>
+          squeezeRingXSide(l.ring, cx, kk, side).map(([x, y]) => [x, cy + (y - cy) * ky] as Pt),
+        );
+      }
+    }
+    let done = false;
+    for (const build of candidates) {
+      if (done) break;
+      const nr = build();
+      const nm = shapeMetrics(nr);
+      if (nm.aspect < 1.28) continue; // solidity is affine-invariant; aspect alone breaks the blob test
+      // Small islands boxing the continent in may be absorbed (a proportionate
+      // sacrifice: a Cyprus-sized island to save a continent-sized blob);
+      // continents and real islands must stay clear.
+      const blockers: Land[] = [];
+      let ok = true;
+      for (const o of finalLands) {
+        if (o === l || removed.has(o.f.id)) continue;
+        const crosses = ringsIntersectGlobe(nr, o.ring);
+        const swallows = !o.isContinent && pointInRingGlobe(centroidOf(o.ring), nr);
+        if (!crosses && !swallows) continue;
+        if (o.isContinent || o.areaKm2 >= 20_000) {
+          ok = false;
+          break;
+        }
+        blockers.push(o);
+      }
+      if (!ok) continue;
+      l.ring = nr;
+      l.bbox = bboxOfRing(nr);
+      l.areaKm2 = areaUnitsToKm2(Math.abs(signedArea(nr)));
+      republishLand(l, featureById, null, false);
+      for (const b of blockers) {
+        removed.add(b.f.id);
+        absorbedIslets.push(String(b.f.properties.name));
+      }
+      fixed++;
+      done = true;
+    }
+  }
+  if (fixed) {
+    log.push({
+      kind: "reshape",
+      tier: 1,
+      description: `${fixed} near-circular continent${
+        fixed === 1 ? "" : "s"
+      } stretched into an elongated, realistic silhouette (area preserved)${
+        absorbedIslets.length
+          ? `; boxing islets ${absorbedIslets.join(", ")} absorbed into the stretched coast`
+          : ""
+      }.`,
+    });
+  }
+}
+
+// ---------------------------------------------------------------------------
+// POLAR OVERSHOOT REPAIR — the raw generator clamps coastline vertices to the
+// rectangular canvas, but reshape/accretion can nudge a ring slightly past a
+// pole, which the verifier rejects (latitude is not periodic). The fix is a
+// minimal y-compression toward the centroid, which cannot invert vertex order.
+// Only runs when a ring actually leaves the verifier's allowed band.
+// ---------------------------------------------------------------------------
+function repairPolarOvershoot(
+  finalLands: Land[],
+  featureById: Map<string, MapFeature>,
+  log: ConflictRecord[],
+): void {
+  let fixed = 0;
+  const noNewConflict = (nr: Pt[], l: Land): boolean => {
+    // The adjustment is a fraction of a percent; reject only if it creates a
+    // NEW conflict the original ring did not already have.
+    const prior = new Set<string>();
+    for (const o of finalLands) {
+      if (o === l) continue;
+      if (ringsIntersectGlobe(l.ring, o.ring)) prior.add(`x:${o.f.id}`);
+      if (!o.isContinent && pointInRingGlobe(centroidOf(o.ring), l.ring)) prior.add(`s:${o.f.id}`);
+    }
+    for (const o of finalLands) {
+      if (o === l) continue;
+      if (ringsIntersectGlobe(nr, o.ring) && !prior.has(`x:${o.f.id}`)) return false;
+      if (!o.isContinent && pointInRingGlobe(centroidOf(o.ring), nr) && !prior.has(`s:${o.f.id}`)) {
+        return false;
+      }
+    }
+    return true;
+  };
+  for (const l of finalLands) {
+    const bb = bboxOfRing(l.ring);
+    if (bb.minY > -1 && bb.maxY < PLANET_HEIGHT + 1) continue; // verifier band
+    const cy = polygonCentroid(l.ring)[1];
+    // 1. Minimal y-compression to sit just inside the band.
+    let ky = 1;
+    if (bb.maxY >= PLANET_HEIGHT + 1 && bb.maxY > cy) {
+      ky = Math.min(ky, (PLANET_HEIGHT - 0.5 - cy) / (bb.maxY - cy));
+    }
+    if (bb.minY <= -1 && bb.minY < cy) {
+      ky = Math.min(ky, (0.5 - cy) / (bb.minY - cy));
+    }
+    const candidates: Pt[][] = [];
+    if (ky > 0 && ky < 1) {
+      candidates.push(l.ring.map(([x, y]) => [x, cy + (y - cy) * ky] as Pt));
+    }
+    // 2. Fallback: clamp only the vertices outside the band.
+    candidates.push(
+      l.ring.map(([x, y]) => [x, Math.min(PLANET_HEIGHT - 0.5, Math.max(0.5, y))] as Pt),
+    );
+    let done = false;
+    for (const nr of candidates) {
+      if (done) break;
+      if (bboxOfRing(nr).minY <= -1 || bboxOfRing(nr).maxY >= PLANET_HEIGHT + 1) continue;
+      if (!noNewConflict(nr, l)) continue;
+      l.ring = nr;
+      l.bbox = bboxOfRing(nr);
+      l.areaKm2 = areaUnitsToKm2(Math.abs(signedArea(nr)));
+      republishLand(l, featureById, null, false);
+      fixed++;
+      done = true;
+    }
+  }
+  if (fixed) {
+    log.push({
+      kind: "reshape",
+      tier: 1,
+      description: `${fixed} coastline${fixed === 1 ? "" : "s"} compressed back inside the polar bounds after reshape growth pushed vertices past a pole.`,
+    });
+  }
+}
+
+// ---------------------------------------------------------------------------
+// SEA RELOCATION — coastline growth during finetuning can leave a named sea
+// basin centred on land. Move such basings to the nearest open water.
+// ---------------------------------------------------------------------------
+function relocateSeasOnLand(
+  finalLands: Land[],
+  featureById: Map<string, MapFeature>,
+  log: ConflictRecord[],
+): void {
+  const landRings = finalLands.map((l) => l.ring);
+  const seas = [...featureById.values()].filter((f) => f.properties.featureType === "sea");
+  let moved = 0;
+  for (const sea of seas) {
+    const ring = sea.geometry.coordinates[0] as Pt[];
+    const c = centroidOf(ring); // same centroid the verifier uses
+    const onLand = landRings.some((r) => pointInRingGlobe(c, r));
+    if (!onLand) continue;
+    const bb = bboxOfRing(ring);
+    let target: Pt | null = null;
+    for (let rad = 60; rad <= 960 && !target; rad += 60) {
+      for (let a = 0; a < 16 && !target; a++) {
+        const th = (a / 16) * Math.PI * 2;
+        const p: Pt = [c[0] + Math.cos(th) * rad, c[1] + Math.sin(th) * rad * 0.7];
+        if (p[1] < 60 || p[1] > PLANET_HEIGHT - 60) continue;
+        // The whole basin ring must stay between the poles, not just its centre.
+        const nyMin = p[1] - (c[1] - bb.minY);
+        const nyMax = p[1] + (bb.maxY - c[1]);
+        if (nyMin < 8 || nyMax > PLANET_HEIGHT - 8) continue;
+        if (landRings.some((r) => pointInRingGlobe(p, r))) continue;
+        target = p;
+      }
+    }
+    if (!target) continue;
+    const [dx, dy] = [target[0] - c[0], target[1] - c[1]];
+    const nr = ring.map(([x, y]) => [x + dx, y + dy] as Pt);
+    featureById.set(sea.id, {
+      ...sea,
+      geometry: { type: "Polygon", coordinates: [nr] },
+      bbox: bboxOfRing(nr),
+    });
+    moved++;
+  }
+  if (moved) {
+    log.push({
+      kind: "displace",
+      tier: 1,
+      description: `${moved} sea basin${
+        moved === 1 ? "" : "s"
+      } relocated to open ocean after coastline changes left the original centre point on land.`,
+    });
+  }
 }
 
 /** Rotate a coordinate path around the cylindrical planet and keep it continuous. */
@@ -861,6 +1512,7 @@ function geometryBBox(g: MapFeature["geometry"]): BBox {
 }
 
 function rotateFeatureAtSeam(f: MapFeature, seamX: number): MapFeature {
+
   // A polar cap covers every longitude; rotating it changes nothing and can
   // produce a needlessly unwrapped 14,400-unit ring.
   if (f.properties.featureType === "ice_cap") return f;
@@ -1350,15 +2002,58 @@ export function finetunePlanetShapes(macro: PlanetMacro): PlanetMacro {
     .map((f) => rawDisplayById.get(f.id) ?? f)
     .filter((f) => f.properties.featureType === "continent" || f.properties.featureType === "island")
     .map(toLand);
+
+  // -------------------------------------------------------------------------
+  // STEP C− — robustness repairs. Each one triggers exclusively on its own
+  // verifier failure condition, so planets that already verify are reproduced
+  // byte-for-byte; only currently-failing seeds are altered. Order matters:
+  // overlaps are separated before the seam is chosen (stuck-together
+  // landmasses cannot be pulled off the antimeridian), and the final blob
+  // pass runs after the seam so it never re-closes the opened strait.
+  // -------------------------------------------------------------------------
+  const rawDrop = new Set<string>();
+  ensureThreeContinents(finalLands, featureById, regionById, records, log);
+  repairPolarOvershoot(finalLands, featureById, log);
+  separateOverlappingLands(finalLands, featureById, rawDisplayById, removed, rawDrop, null, log);
+  repairContinentBlobs(finalLands, featureById, removed, log, null);
+
   // Keep the comparison view intact too: seam must be ocean in both the raw
   // restored silhouettes and the final reshaped silhouettes.
-  const seamX = chooseOceanSeam([...finalLands, ...rawDisplayLands]);
+  let seamPick = chooseOceanSeamMeasured([...finalLands, ...rawDisplayLands]);
+  if (seamPick.clearance <= SEAM_FAIL_CLEARANCE) {
+    openSeamCorridor(
+      finalLands,
+      rawDisplayLands,
+      featureById,
+      rawDisplayById,
+      removed,
+      rawDrop,
+      log,
+    );
+    const keptLands = [
+      ...finalLands.filter((l) => !removed.has(l.f.id)),
+      ...rawDisplayLands.filter((l) => !rawDrop.has(l.f.id)),
+    ];
+    seamPick = chooseOceanSeamMeasured(keptLands);
+  }
+  const seamX = seamPick.seamX;
   const rotationDeg = -(seamX / PLANET_WIDTH) * 360;
+
+  // The corridor repair can shift landmasses into each other's way again;
+  // a second, seam-guarded separation sweep tidies up whatever is left.
+  separateOverlappingLands(finalLands, featureById, rawDisplayById, removed, rawDrop, seamX, log);
+  // Repairs can rarely re-round a continent; fix it with seam-safe shapes
+  // (y-compression or one-sided x-expansion away from the strait).
+  repairContinentBlobs(finalLands.filter((l) => !removed.has(l.f.id)), featureById, removed, log, seamX);
+
+  relocateSeasOnLand(finalLands.filter((l) => !removed.has(l.f.id)), featureById, log);
 
   const preRotate = rawFeatures.filter((f) => !removed.has(f.id)).map((f) => featureById.get(f.id)!);
   const features = preRotate.map((f) => rotateFeatureAtSeam(f, seamX));
   const rotatedById = new Map(features.map((f) => [f.id, f]));
-  const rawDisplayFeatures = rawFeatures.map((f) => rotateFeatureAtSeam(rawDisplayById.get(f.id) ?? f, seamX));
+  const rawDisplayFeatures = rawFeatures
+    .filter((f) => !rawDrop.has(f.id))
+    .map((f) => rotateFeatureAtSeam(rawDisplayById.get(f.id) ?? f, seamX));
 
   log.push({
     kind: "reshape",

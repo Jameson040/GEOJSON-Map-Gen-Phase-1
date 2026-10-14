@@ -31,5 +31,8 @@ jobs:
       - name: Full world verifier (second seed)
         run: npm run verify -- meridian-3
 
+      - name: Golden-seed regression harness (62 seeds)
+        run: npm run seeds
+
       - name: Production build (single file)
         run: npm run build

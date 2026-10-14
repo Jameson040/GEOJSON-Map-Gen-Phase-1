@@ -284,8 +284,10 @@ The project's core bet — *frozen lower layers + adversarial finetune + a verif
 | **P2-4** Cadastre verification aggregation | ✅ done | L7 status now merges all settlements' reports by check id (counts summed, pass requires all) instead of surfacing one arbitrary settlement |
 | **P3-2** CI | ✅ done | `.github/workflows/ci.yml`: npm ci → check → smoke → verify (two seeds) → build, Node 22 |
 | **P3-1** Tests (adapted) | ✅ done via the existing harness | Instead of introducing Vitest, `scripts/check-project.ts` grew two new static checks (registry DAG + invalidation closures; cadastre cache-key fingerprinting) and the smoke test grew the seven-layer pipeline, cache-invalidation semantics, per-layer checkpoint round-trip, orphan rejection and v1 compatibility. Every regression fixed in this pass is now locked in by a failing-red test path |
+| **P3-1b** Golden-seed harness + Tier-1 robustness | ✅ done | `scripts/golden-seeds.ts` + `npm run seeds` (wired into CI): a 62-seed locked corpus where every previously-passing seed must stay **byte-identical** (SHA-256 over features/rawFeatures/regions/plates/stats/shape records) and previously-failing seeds may only improve. Tier-1 random-seed pass rate raised **~65% → 100% on the corpus, ~98% on a fresh 200-seed sweep** via conditional finetune repairs (antimeridian strait opening, continent promotion after suture merges, overlap separation incl. a `ringsIntersectGlobe` multi-image fix, blob stretch, polar clamp, sea relocation) — each repair fires only on its own verifier failure, so passing planets are untouched |
 
 Verification after the full pass: `npm run check` ✅ · `npm run smoke` ✅ · `npm run verify` (terra-novus **and** meridian-3) ✅ ALL LAYERS VERIFIED · `npm run build` ✅ (2.12 MB single file).
+Verification after the seed-robustness pass: additionally `npm run seeds` ✅ 62/62 with zero golden-hash drift, and `npm run verify` on repaired seeds (m7ss3oop, xps7tq2s) ✅ ALL LAYERS VERIFIED.
 
 ### Deliberately deferred (unchanged recommendations)
 
