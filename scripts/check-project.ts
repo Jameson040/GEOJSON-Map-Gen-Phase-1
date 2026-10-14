@@ -14,6 +14,10 @@ import { createCheckpoint, readCheckpoint } from "../src/workspace/checkpoint";
 import { DEFAULT_LAYERS } from "../src/world/canvas-renderer";
 import { SETTLEMENT_CATALOG } from "../src/world/human/settlement-catalog";
 import { settlementSpacingKm } from "../src/world/human/human-rules";
+import { LAYER_BY_ID, WORLD_LAYERS, layerConsumers } from "../src/world/layers";
+import { cadastreCacheKey, cadastreCacheSize, clearCadastreCache } from "../src/world/cadastre/cadastre-cache";
+import type { CadastreConfig } from "../src/world/cadastre/cadastre-types";
+import type { ZonePopulation } from "../src/world/population/population-types";
 
 const root = fileURLToPath(new URL("../", import.meta.url));
 let failures = 0;
@@ -112,6 +116,47 @@ run("Settlement spacing is symmetric for all catalog pairs", () => {
   }
 });
 
+run("World layer registry is a valid dependency DAG with sound invalidation closures", () => {
+  const ids = new Set(WORLD_LAYERS.map((l) => l.id));
+  assert.equal(ids.size, WORLD_LAYERS.length, "Duplicate layer ids");
+  assert.deepEqual(
+    WORLD_LAYERS.map((l) => l.index),
+    WORLD_LAYERS.map((_, i) => i + 1),
+    "Layer indexes must be contiguous and ordered"
+  );
+  for (const l of WORLD_LAYERS) {
+    for (const ref of [l.dependsOn, ...(l.readsFrom ?? []), ...(l.refreshesFrom ?? [])]) {
+      if (!ref) continue;
+      assert(ids.has(ref), `${l.id} references unknown layer ${ref}`);
+      assert(LAYER_BY_ID[ref].index < l.index, `${l.id} references a later layer ${ref} (cycle)`);
+    }
+  }
+  // Hard invalidation closures the workspace store relies on:
+  const consumersOf = (id: keyof typeof LAYER_BY_ID) => [...layerConsumers(id)].sort();
+  assert.deepEqual(consumersOf("geo"), ["bio", "cadastre", "human", "population", "resource", "routes"]);
+  assert.deepEqual(consumersOf("bio"), ["cadastre", "human", "population", "routes"]);
+  assert.deepEqual(consumersOf("human"), ["cadastre", "population", "routes"]);
+  assert.deepEqual(consumersOf("population"), ["cadastre"], "population re-runs must evict cadastres (roofs scale with occupancy)");
+  assert.deepEqual(consumersOf("resource"), [], "optional resource reads must NOT evict consumers (staleness badge only)");
+  assert.deepEqual(consumersOf("routes"), []);
+  assert.deepEqual(consumersOf("cadastre"), []);
+});
+
+run("Cadastre cache keys fingerprint the population model and config", () => {
+  const pop1 = { occupancy: 100, hardCap: 200 } as ZonePopulation;
+  const pop2 = { occupancy: 300, hardCap: 400 } as ZonePopulation;
+  const cfgA: CadastreConfig = { buildingDensity: 1, roofPitchMultiplier: 1 };
+  const cfgB: CadastreConfig = { buildingDensity: 2, roofPitchMultiplier: 1 };
+  const key = (p?: ZonePopulation, c?: CadastreConfig) => cadastreCacheKey("r1", "set_1", p, c);
+  assert.equal(key(), key(undefined, undefined), "stable key for absent inputs");
+  assert.equal(key(pop1, cfgA), cadastreCacheKey("r1", "set_1", { ...pop1 }, { ...cfgA }), "same content must share a key");
+  assert.notEqual(key(pop1), key(pop2), "different population models must never collide");
+  assert.notEqual(key(pop1), key(undefined), "a population model must not hit the no-population entry");
+  assert.notEqual(key(pop1, cfgA), key(pop1, cfgB), "different cadastre configs must never collide");
+  assert.notEqual(key(pop1), cadastreCacheKey("r2", "set_1", pop1), "different regions must never collide");
+  assert.notEqual(key(pop1), cadastreCacheKey("r1", "set_2", pop1), "different settlements must never collide");
+});
+
 run("Tar archive preserves UTF-8 contents and validates header checksums", () => {
   assert.equal(projectRelativePath("../App.tsx"), "src/App.tsx");
   assert.equal(projectRelativePath("./archive.ts"), "src/workspace/archive.ts");
@@ -166,6 +211,23 @@ async function smoke() {
   assert(human.verifyAfter.passedAll, "Human verifier failed");
   const humanHash = hash(human);
 
+  // ---- L2 Geological Resources ----
+  const { generateResourceLayer } = await import("../src/world/resources");
+  const { DEFAULT_RESOURCE_CONFIG } = await import("../src/world/resources/resource-filter");
+  const resource = await generateResourceLayer(region, DEFAULT_RESOURCE_CONFIG);
+  assert(resource.deposits.length > 0, "No resource deposits were generated");
+  assert.equal(hash(region), geoHash, "Resource layer changed frozen geography");
+  const resourceHash = hash(resource);
+
+  // ---- L5 Population ----
+  const { generatePopulationLayer } = await import("../src/world/population/population-generate");
+  const population = await generatePopulationLayer(region, bio, human, { era: "current", year: 2026, targetScale: 1 });
+  assert(population.verifyAfter.passedAll, "Population verifier failed");
+  assert.equal(hash(region), geoHash, "Population layer changed frozen geography");
+  assert.equal(hash(human), humanHash, "Population layer changed the habitable zones");
+  assert.equal(hash(bio), bioHash, "Population layer changed the biosphere");
+  const populationHash = hash([...population.model.values()]);
+
   const { generateRouteLayer } = await import("../src/world/routes/route-generate");
   const route = await generateRouteLayer(region, human.settlements);
   assert.equal(hash(region), geoHash, "Route layer changed frozen geography");
@@ -173,18 +235,45 @@ async function smoke() {
   assert.equal(hash(human), humanHash, "Route layer changed frozen settlements");
   assert(route.verifyAfter.passedAll, "Route verifier failed");
   assert(route.routes.length > 0, "No routes were generated");
+  const routeHash = hash(route);
   console.log(`PASS Route network generated: ${route.routes.length} routes, ${route.stats.totalKm} km, ${route.stats.connectedSettlementsCount} connected settlements`);
+
+  // ---- L7 Cadastre (a surveyable subset) + cache invalidation semantics ----
+  const { generateCadastreLayer, getCadastreForSettlement } = await import("../src/world/cadastre/cadastre-cache");
+  const surveyed = human.settlements.slice(0, 3);
+  const cadastre = await generateCadastreLayer(region, surveyed, population.model);
+  assert(cadastre.stats.totalBuildings > 0, "No buildings were surveyed");
+  assert.equal(hash(human), humanHash, "Cadastre layer changed frozen settlements");
+  const cadastreHash = hash([...cadastre.cadastres.values()]);
+  assert(cadastreCacheSize() >= surveyed.length, "Surveyed cadastres must be resident in the JIT cache");
+  const beforeClear = cadastreCacheSize();
+  clearCadastreCache(descriptor.id);
+  assert.equal(cadastreCacheSize(), 0, `clearCadastreCache(regionId) must evict that region's ${beforeClear} entries`);
+  // A different population model must generate a fresh entry, never a stale hit:
+  const sample = surveyed[0];
+  const popForSample = population.model.get(sample.id)!;
+  const first = getCadastreForSettlement(region, sample, popForSample);
+  const grewForNewModel = getCadastreForSettlement(region, sample, { ...popForSample, occupancy: popForSample.occupancy + 1234, hardCap: popForSample.hardCap });
+  assert.notEqual(first, grewForNewModel, "A changed population model must not be served the previous cadastre");
+  clearCadastreCache();
+
+  // ---- Full 7-layer checkpoint round-trip ----
   const checkpoint = createCheckpoint({
     macro,
     regions: new Map([[descriptor.id, region]]),
     biosphere: new Map([[descriptor.id, bio]]),
     humans: new Map([[descriptor.id, human]]),
+    populations: new Map([[descriptor.id, population]]),
+    resources: new Map([[descriptor.id, resource]]),
+    routes: new Map([[descriptor.id, route]]),
+    cadastres: new Map([[descriptor.id, cadastre]]),
+    resourceConfig: DEFAULT_RESOURCE_CONFIG,
     view: {
       tabs: [{ id: "planet", kind: "planet", title: "Planet" }, { id: `region:${descriptor.id}`, kind: "region", title: descriptor.name, regionId: descriptor.id }],
       activeTabId: `region:${descriptor.id}`,
       themeId: "atlas",
       layers: DEFAULT_LAYERS,
-      visibility: { geo: true, bio: true, human: true },
+      visibility: { geo: true, bio: true, human: true, population: true, resource: true, routes: true, cadastre: true },
       raw: { geography: false, biosphere: false, human: false },
     },
   });
@@ -192,10 +281,39 @@ async function smoke() {
   assert.equal(hash(restored.regions[0]), geoHash);
   assert.equal(hash(restored.biosphere[0]), bioHash);
   assert.equal(hash(restored.humans[0]), hash(human));
+  assert.equal(hash(Object.values(restored.populations![0].model)), populationHash, "Population model must survive the round-trip");
+  assert.equal(hash(restored.resources![0]), resourceHash, "Resource layer must survive the round-trip");
+  assert.equal(hash(restored.routes![0]), routeHash, "Route layer must survive the round-trip");
+  assert.equal(hash(Object.values(restored.cadastres![0].cadastres)), cadastreHash, "Cadastre layer must survive the round-trip");
+  assert.deepEqual(restored.resourceConfig, DEFAULT_RESOURCE_CONFIG, "Resource filter config must survive the round-trip");
   const orphaned = structuredClone(checkpoint);
   orphaned.biosphere[0].regionId = "missing-parent";
   assert.throws(() => readCheckpoint(JSON.stringify(orphaned)), /parent/);
-  console.log(`PASS Sequential three-layer generation and exact checkpoint round-trip (${seed})`);
+  const orphanedRoute = structuredClone(checkpoint);
+  orphanedRoute.routes![0].regionId = "missing-parent";
+  assert.throws(() => readCheckpoint(JSON.stringify(orphanedRoute)), /parent/);
+  const orphanedCadastre = structuredClone(checkpoint);
+  orphanedCadastre.cadastres![0].regionId = "missing-parent";
+  assert.throws(() => readCheckpoint(JSON.stringify(orphanedCadastre)), /parent/);
+
+  // ---- v1 checkpoints (before resources/routes/cadastres existed) stay restorable ----
+  const v1 = structuredClone(checkpoint);
+  v1.version = 1;
+  delete (v1 as Partial<typeof v1>).resources;
+  delete (v1 as Partial<typeof v1>).routes;
+  delete (v1 as Partial<typeof v1>).cadastres;
+  delete (v1 as Partial<typeof v1>).resourceConfig;
+  const v1Visibility = v1.view.visibility as Record<string, unknown>;
+  delete v1Visibility.resource;
+  delete v1Visibility.routes;
+  delete v1Visibility.cadastre;
+  const restoredV1 = readCheckpoint(JSON.stringify(v1));
+  assert.equal(restoredV1.version, 1);
+  assert.equal(restoredV1.resources, undefined, "v1 restore arrives with no resource layers");
+  assert.equal(restoredV1.routes, undefined, "v1 restore arrives with no route layers");
+  assert.equal(restoredV1.cadastres, undefined, "v1 restore arrives with no cadastre layers");
+  assert.equal(hash(restoredV1.regions[0]), geoHash, "v1 restore keeps the frozen geography byte-identical");
+  console.log(`PASS Sequential seven-layer generation, cadastre cache invalidation, and exact checkpoint round-trip incl. v1 compatibility (${seed})`);
 }
 
 if (process.argv.includes("--smoke") && failures === 0) {
@@ -204,6 +322,6 @@ if (process.argv.includes("--smoke") && failures === 0) {
     console.error("FAIL Pipeline smoke test:", e instanceof Error ? e.message : String(e));
   }
 } else console.log("NOT RUN Pipeline smoke test (add --smoke)");
-console.log("PENDING Population must move to a time-dependent, per-settlement layer; legacy data is preserved for backup.");
+console.log("PASS Population is a time-dependent per-zone layer (L5), verified by this script and scripts/verify-world.ts.");
 if (failures) process.exitCode = 1;
 else console.log("PASS Requested project-health checks completed");

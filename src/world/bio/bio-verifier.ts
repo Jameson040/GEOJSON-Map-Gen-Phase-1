@@ -6,7 +6,7 @@ import { dist } from "../geom";
 import { kmToUnits } from "../constants";
 
 // ---------------------------------------------------------------------------
-// LAYER 2 VERIFIER — asserts the biosphere invariants against the frozen
+// LAYER 3 VERIFIER — asserts the biosphere invariants against the frozen
 // geography, before and after finetuning. Reuses the project-wide
 // VerificationReport shape so results read exactly like the geographic ones.
 // ---------------------------------------------------------------------------
@@ -128,7 +128,7 @@ export function verifyBioLayer(
     );
   }
 
-  // 4. Food security (Layer 3 contract) ----------------------------------------
+  // 4. Food security (Layer 4 contract) ----------------------------------------
   {
     const violations: string[] = [];
     const details: string[] = [];

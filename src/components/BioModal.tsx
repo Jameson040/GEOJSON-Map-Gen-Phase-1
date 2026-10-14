@@ -19,7 +19,7 @@ import {
 } from "lucide-react";
 
 // ---------------------------------------------------------------------------
-// Layer 2 — Biosphere control panel. Generation config, finetune ledger,
+// Layer 3 — Biosphere control panel. Generation config, finetune ledger,
 // verifier before/after, and the imported species catalog (FAO EcoCrop).
 // ---------------------------------------------------------------------------
 
@@ -64,7 +64,7 @@ export function BioModal({
     const fc = {
       type: "FeatureCollection",
       metadata: {
-        generator: "Terra Ex Nihilo — Layer 2 Biosphere",
+        generator: "Terra Ex Nihilo — Layer 3 Biosphere",
         layer: "bio",
         region: existing.regionName,
         seed: existing.seedUsed,
@@ -104,7 +104,7 @@ export function BioModal({
               <Leaf className="h-5 w-5" />
             </div>
             <div>
-              <h2 className="text-lg font-semibold text-white">Layer 2 — Flora &amp; Fauna · {region.descriptor.name}</h2>
+              <h2 className="text-lg font-semibold text-white">Layer 3 — Flora &amp; Fauna · {region.descriptor.name}</h2>
               <p className="text-xs text-zinc-400">
                 Builds on the frozen geography — creative scatter, then rule-based finetune. Geography is never modified.
               </p>
@@ -146,7 +146,7 @@ export function BioModal({
                 species populations with no rules at all — rice on glaciers, tuna in deserts. The Finetune then
                 drops, relocates or adds populations against the frozen geography: EcoCrop climate envelopes,
                 habitat domains, river/lake water reach, forage for herds, density caps, and a food-security
-                guarantee so Layer 3 (settlements) always finds staple, protein, vegetables, timber and forage
+                guarantee so Layer 4 (settlements) always finds staple, protein, vegetables, timber and forage
                 where the climate allows them.
               </div>
               <div className="grid grid-cols-1 gap-4 md:grid-cols-2">

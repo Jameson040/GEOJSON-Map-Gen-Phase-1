@@ -36,20 +36,22 @@ export function CadastreModal({
 
   if (!open || !region || !human) return null;
 
+  /** The config the "cached" indicators are checked against — the one currently selected in this modal. */
+  const previewCfg: CadastreConfig = {
+    buildingDensity: density,
+    roofPitchMultiplier: pitchMult,
+    customSeed: customSeed.trim() || undefined,
+  };
+
   const handleGenerateAll = async () => {
     setBusy(true);
     setProgress({ stage: 1, totalStages: 1, stageName: "Surveying Region Cadastre", percent: 5, featuresCount: 0, elapsedMs: 0 });
     try {
-      const cfg: CadastreConfig = {
-        buildingDensity: density,
-        roofPitchMultiplier: pitchMult,
-        customSeed: customSeed.trim() || undefined,
-      };
       const result = await generateCadastreLayer(
         region,
         human.settlements,
         population?.model,
-        cfg,
+        previewCfg,
         setProgress
       );
       onCadastreGenerated(result);
@@ -62,7 +64,7 @@ export function CadastreModal({
   const totalSettlements = human.settlements.length;
   const existingCadastresCount = cadastreLayer
     ? cadastreLayer.cadastres.size
-    : human.settlements.filter((s) => peekCachedCadastre(region.descriptor.id, s.id)).length;
+    : human.settlements.filter((s) => peekCachedCadastre(region.descriptor.id, s.id, population?.model?.get(s.id), previewCfg)).length;
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm animate-in fade-in duration-150">
@@ -75,7 +77,7 @@ export function CadastreModal({
             </span>
             <div>
               <h2 className="text-base font-bold text-white">
-                Layer 5 — Cadastre & Roofs Generator
+                Layer 7 — Cadastre & Roofs Generator
               </h2>
               <p className="text-xs text-zinc-400">
                 Google Earth for Fantasy World Lite · {region.descriptor.name}
@@ -168,7 +170,7 @@ export function CadastreModal({
             </div>
             <div className="max-h-40 space-y-1 overflow-y-auto rounded-xl border border-white/10 bg-black/30 p-2">
               {human.settlements.slice(0, 15).map((s) => {
-                const isCached = hasCachedCadastre(region.descriptor.id, s.id);
+                const isCached = hasCachedCadastre(region.descriptor.id, s.id, population?.model?.get(s.id), previewCfg);
                 return (
                   <div
                     key={s.id}
@@ -255,7 +257,7 @@ export function CadastreModal({
                 </>
               ) : (
                 <>
-                  <Sparkles className="h-3.5 w-3.5" /> Survey All Cadastres (L5)
+                  <Sparkles className="h-3.5 w-3.5" /> Survey All Cadastres (L7)
                 </>
               )}
             </button>

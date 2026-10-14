@@ -4,11 +4,21 @@ import type { GeneratedRegion, MapThemeId, PlanetMacro, WorkspaceTab } from "../
 import type { RenderLayers } from "../world/canvas-renderer";
 import { SPECIES_BY_ID } from "../world/bio/species-catalog";
 import { SETTLEMENT_BY_TYPE } from "../world/human/settlement-catalog";
+import type { ResourceFilterConfig, ResourceLayerResult } from "../world/resources/resource-types";
+import type { RouteLayerResult } from "../world/routes/route-types";
+import type { CadastreLayerResult, SettlementCadastre } from "../world/cadastre/cadastre-types";
 
 import type { PopulationLayerResult, ZonePopulation } from "../world/population/population-types";
 
 export const CHECKPOINT_FORMAT = "terra-ex-nihilo/workspace";
-export const CHECKPOINT_VERSION = 1;
+/**
+ * v1 — macro + regions + biosphere + humans (+ optional populations) and view.
+ * v2 — additionally resources, routes and cadastres, the resource filter
+ *      config, and the resource/routes/cadastre visibility flags. v1 files
+ *      remain restorable: the missing layers simply arrive empty.
+ */
+export const CHECKPOINT_VERSION = 2;
+export const SUPPORTED_CHECKPOINT_VERSIONS = [1, 2];
 export const MAX_CHECKPOINT_BYTES = 150 * 1024 * 1024;
 
 export interface WorkspaceView {
@@ -16,7 +26,7 @@ export interface WorkspaceView {
   activeTabId: string;
   themeId: MapThemeId;
   layers: RenderLayers;
-  visibility: { geo: boolean; bio: boolean; human: boolean; population?: boolean };
+  visibility: { geo: boolean; bio: boolean; human: boolean; population?: boolean; resource?: boolean; routes?: boolean; cadastre?: boolean };
   raw: { geography: boolean; biosphere: boolean; human: boolean; population?: boolean };
 }
 
@@ -25,9 +35,13 @@ export interface SerializedPopulationLayerResult extends Omit<PopulationLayerRes
   rawModel: Record<string, ZonePopulation>;
 }
 
+export interface SerializedCadastreLayerResult extends Omit<CadastreLayerResult, "cadastres"> {
+  cadastres: Record<string, SettlementCadastre>;
+}
+
 export interface WorkspaceCheckpoint {
   format: typeof CHECKPOINT_FORMAT;
-  version: typeof CHECKPOINT_VERSION;
+  version: number;
   savedAt: string;
   architecture: {
     geography: "frozen";
@@ -40,6 +54,12 @@ export interface WorkspaceCheckpoint {
   biosphere: BioLayerResult[];
   humans: HumanLayerResult[];
   populations?: SerializedPopulationLayerResult[];
+  /** v2: geological resources, trade routes and cadastral surveys. */
+  resources?: ResourceLayerResult[];
+  routes?: RouteLayerResult[];
+  cadastres?: SerializedCadastreLayerResult[];
+  /** v2: the resource filter configuration active when the world was saved. */
+  resourceConfig?: ResourceFilterConfig;
   view: WorkspaceView;
 }
 
@@ -49,6 +69,10 @@ export interface CheckpointInput {
   biosphere: Map<string, BioLayerResult>;
   humans: Map<string, HumanLayerResult>;
   populations?: Map<string, PopulationLayerResult>;
+  resources?: Map<string, ResourceLayerResult>;
+  routes?: Map<string, RouteLayerResult>;
+  cadastres?: Map<string, CadastreLayerResult>;
+  resourceConfig?: ResourceFilterConfig;
   view: WorkspaceView;
 }
 
@@ -60,6 +84,18 @@ export function deserializePopulations(serialized?: SerializedPopulationLayerRes
       ...s,
       model: new Map(Object.entries(s.model ?? {})),
       rawModel: new Map(Object.entries(s.rawModel ?? {})),
+    });
+  }
+  return out;
+}
+
+export function deserializeCadastres(serialized?: SerializedCadastreLayerResult[]): Map<string, CadastreLayerResult> {
+  const out = new Map<string, CadastreLayerResult>();
+  if (!serialized) return out;
+  for (const s of serialized) {
+    out.set(s.regionId, {
+      ...s,
+      cadastres: new Map(Object.entries(s.cadastres ?? {})),
     });
   }
   return out;
@@ -89,6 +125,15 @@ export function createCheckpoint(input: CheckpointInput): WorkspaceCheckpoint {
           rawModel: Object.fromEntries(p.rawModel.entries()),
         }))
       : undefined,
+    resources: input.resources && input.resources.size > 0 ? [...input.resources.values()] : undefined,
+    routes: input.routes && input.routes.size > 0 ? [...input.routes.values()] : undefined,
+    cadastres: input.cadastres && input.cadastres.size > 0
+      ? [...input.cadastres.values()].map((c) => ({
+          ...c,
+          cadastres: Object.fromEntries(c.cadastres.entries()),
+        }))
+      : undefined,
+    resourceConfig: input.resourceConfig,
     view: input.view,
   };
   return readCheckpoint(JSON.stringify(value));
@@ -156,6 +201,12 @@ export function inspectCheckpoint(value: unknown): string[] {
     const b = pts[pts.length - 1];
     if (Array.isArray(a) && Array.isArray(b) && (a[0] !== b[0] || a[1] !== b[1])) issue(`${path} is not closed`);
   };
+  /** Cadastre polygons are stored as OPEN rings (first point ≠ last); the renderer and the GeoJSON export close them. */
+  const openRing = (v: unknown, path: string) => {
+    const pts = array(v, path);
+    if (pts.length < 3) issue(`${path} is a degenerate ring`);
+    for (const p of pts) point(p, path);
+  };
   const unique = (items: unknown[], path: string, key = "id"): Set<string> => {
     const ids = new Set<string>();
     for (const item of items) {
@@ -211,7 +262,7 @@ export function inspectCheckpoint(value: unknown): string[] {
 
   const root = object(value, "checkpoint");
   if (root.format !== CHECKPOINT_FORMAT) issue("Unrecognized checkpoint format");
-  if (root.version !== CHECKPOINT_VERSION) issue("Unsupported checkpoint version");
+  if (!SUPPORTED_CHECKPOINT_VERSIONS.includes(Number(root.version))) issue("Unsupported checkpoint version");
   requireStrings(root, "checkpoint", ["savedAt"]);
   const architecture = object(root.architecture, "architecture");
   if (architecture.populationLayer !== "pending" && architecture.populationLayer !== "active") issue("This checkpoint belongs to a different population-layer version");
@@ -334,7 +385,7 @@ export function inspectCheckpoint(value: unknown): string[] {
   }
 
   const humans = array(root.humans, "humans");
-  unique(humans, "humans", "regionId");
+  const humanIds = unique(humans, "humans", "regionId");
   for (const item of humans) {
     const h = object(item, "humans");
     if (!bioIds.has(String(h.regionId))) issue(`Human layer ${String(h.regionId)} has no biosphere parent`);
@@ -370,8 +421,8 @@ export function inspectCheckpoint(value: unknown): string[] {
       unique(list, `humans.${key}`);
       for (const item of list) {
         const s = object(item, "settlement");
-        // Layer 3 stays population-free: population is Layer 4, not baked into zones.
-        if (s.population !== undefined) issue("Settlement carries a population field — population must live in Layer 4, not Layer 3");
+        // Layer 4 stays population-free: population is Layer 5, not baked into zones.
+        if (s.population !== undefined) issue("Settlement carries a population field — population must live in Layer 5, not Layer 4");
         requireStrings(s, "settlement", ["id", "name", "glyph", "origin", "type"]);
         requireNumbers(s, "settlement", ["popCap", "capacity", "compartmentId", "lodZoom"]);
         if (s.habitation !== undefined && !["lived_now", "ancient_pulse", "potential"].includes(String(s.habitation))) issue("Invalid habitation state");
@@ -387,7 +438,7 @@ export function inspectCheckpoint(value: unknown): string[] {
     report(h.verifyAfter, "humans.verifyAfter");
   }
 
-  // L4 population records (optional; strictly validated when present)
+  // L5 population records (optional; strictly validated when present)
   const pops = root.populations === undefined ? [] : array(root.populations, "populations");
   unique(pops, "populations", "regionId");
   for (const item of pops) {
@@ -407,7 +458,7 @@ export function inspectCheckpoint(value: unknown): string[] {
         const zp = object(v, "zonePop");
         requireStrings(zp, "zonePop", ["zoneId"]);
         requireNumbers(zp, "zonePop", ["occupancy", "densityPerKm2", "hardCap", "usagePercent", "yearProduced", "backcastYears", "forwardCastYears"]);
-        if (zp.layer !== "population") issue("Layer-4 record lacks the population tag");
+        if (zp.layer !== "population") issue("Layer-5 record lacks the population tag");
         if (Number(zp.occupancy) < 0) issue("Negative occupancy");
         for (const ph of array(zp.phases, "zonePop.phases")) {
           const seg = object(ph, "zonePop.phase");
@@ -419,6 +470,114 @@ export function inspectCheckpoint(value: unknown): string[] {
         object(zp.drivers, "zonePop.drivers");
       }
     }
+  }
+
+  // ---- v2 layers (optional; strictly validated when present) ----
+  // Geological resources depend on geography only.
+  const resources = root.resources === undefined ? [] : array(root.resources, "resources");
+  unique(resources, "resources", "regionId");
+  for (const item of resources) {
+    const r = object(item, "resources");
+    if (!regionIds.has(String(r.regionId))) issue(`Resource layer ${String(r.regionId)} has no geographic parent`);
+    requireStrings(r, "resources", ["regionName", "generatedAt"]);
+    const cfg = object(r.config, "resources.config");
+    const requireResourceConfig = (target: Record<string, unknown>, path: string) => {
+      for (const key of ["includeFantasy", "includeFossilFuels", "includeCoal", "includePetroleum", "includeNaturalGas"]) {
+        if (typeof target[key] !== "boolean") issue(`${path}.${key} must be boolean`);
+      }
+      requireNumbers(target, path, ["abundanceMultiplier"]);
+      if (!["pure_fantasy", "historical_medieval", "bronze_iron_age", "steampunk_industrial", "custom"].includes(String(target.preset))) issue(`Invalid resource preset in ${path}`);
+    };
+    requireResourceConfig(cfg, "resources.config");
+    strings(cfg.excludedResourceIds ?? [], "resources.config.excludedResourceIds");
+    for (const key of ["deposits", "rawDeposits"]) {
+      for (const d of array(r[key], `resources.${key}`)) {
+        const dep = object(d, "resources.deposit");
+        requireStrings(dep, "resources.deposit", ["id", "resourceId", "name", "glyph", "category", "domain", "yieldEstimate", "geologicalContext"]);
+        requireNumbers(dep, "resources.deposit", ["abundance", "radiusUnits", "compartmentId"]);
+        point(dep.point, "resources.deposit.point");
+      }
+    }
+    const stats = object(r.stats, "resources.stats");
+    requireNumbers(stats, "resources.stats", ["totalDeposits", "metalsCount", "claysCount", "stonesCount", "saltsCount", "fuelsCount", "gemsCount", "fantasyCount", "activeCatalogSize", "excludedCatalogSize"]);
+  }
+  if (root.resourceConfig !== undefined) {
+    const cfg = object(root.resourceConfig, "resourceConfig");
+    for (const key of ["includeFantasy", "includeFossilFuels", "includeCoal", "includePetroleum", "includeNaturalGas"]) {
+      if (typeof cfg[key] !== "boolean") issue(`resourceConfig.${key} must be boolean`);
+    }
+    requireNumbers(cfg, "resourceConfig", ["abundanceMultiplier"]);
+    if (!["pure_fantasy", "historical_medieval", "bronze_iron_age", "steampunk_industrial", "custom"].includes(String(cfg.preset))) issue("Invalid resource preset in resourceConfig");
+    strings(cfg.excludedResourceIds ?? [], "resourceConfig.excludedResourceIds");
+  }
+
+  // Trade routes depend on the human layer (settlements).
+  const routeLayers = root.routes === undefined ? [] : array(root.routes, "routes");
+  unique(routeLayers, "routes", "regionId");
+  for (const item of routeLayers) {
+    const r = object(item, "routes");
+    if (!humanIds.has(String(r.regionId))) issue(`Route layer ${String(r.regionId)} has no habitable-zone parent`);
+    requireStrings(r, "routes", ["regionName", "seedUsed"]);
+    requireNumbers(r, "routes", ["generatedAt"]);
+    requireNumbers(object(r.config, "routes.config"), "routes.config", ["density", "pavedHighwayShare"]);
+    for (const key of ["routes", "rawRoutes"]) {
+      const list = array(r[key], `routes.${key}`);
+      unique(list, `routes.${key}`);
+      for (const rt of list) {
+        const route = object(rt, "routes.route");
+        requireStrings(route, "routes.route", ["id", "name", "type", "startSettlementId", "startSettlementName", "endSettlementId", "endSettlementName"]);
+        requireNumbers(route, "routes.route", ["lengthKm", "straightKm", "sinuosity", "bridgesCount", "mountainPassesCount", "lodZoom"]);
+        const pts = array(route.points, "routes.route.points");
+        if (pts.length < 2) issue("routes.route.points is degenerate");
+        for (const p of pts) point(p, "routes.route.point");
+        strings(route.tradeGoods, "routes.route.tradeGoods");
+      }
+    }
+    report(r.verifyBefore, "routes.verifyBefore");
+    report(r.verifyAfter, "routes.verifyAfter");
+  }
+
+  // Cadastres depend on the human layer; population only sizes roofs.
+  const cadastreLayers = root.cadastres === undefined ? [] : array(root.cadastres, "cadastres");
+  unique(cadastreLayers, "cadastres", "regionId");
+  for (const item of cadastreLayers) {
+    const r = object(item, "cadastres");
+    if (!humanIds.has(String(r.regionId))) issue(`Cadastre layer ${String(r.regionId)} has no habitable-zone parent`);
+    const cadastres = object(r.cadastres, "cadastres.cadastres");
+    for (const c of Object.values(cadastres) as unknown[]) {
+      const cad = object(c, "cadastres.settlement");
+      requireStrings(cad, "cadastres.settlement", ["settlementId", "settlementName", "tier", "type", "generatedAt"]);
+      requireNumbers(cad, "cadastres.settlement", ["radiusUnits", "radiusM", "rawBuildingCount"]);
+      point(cad.center, "cadastres.settlement.center");
+      for (const s of array(cad.streets, "cadastres.settlement.streets")) {
+        const street = object(s, "cadastres.street");
+        requireStrings(street, "cadastres.street", ["id", "kind", "surface"]);
+        requireNumbers(street, "cadastres.street", ["widthM"]);
+        const pts = array(street.points, "cadastres.street.points");
+        if (pts.length < 2) issue("cadastres.street.points is degenerate");
+        for (const p of pts) point(p, "cadastres.street.point");
+      }
+      for (const p of array(cad.parcels, "cadastres.settlement.parcels")) {
+        const parcel = object(p, "cadastres.parcel");
+        requireStrings(parcel, "cadastres.parcel", ["id", "landUse"]);
+        requireNumbers(parcel, "cadastres.parcel", ["areaM2"]);
+        openRing(parcel.boundary, "cadastres.parcel.boundary");
+      }
+      for (const b of array(cad.buildings, "cadastres.settlement.buildings")) {
+        const bld = object(b, "cadastres.building");
+        requireStrings(bld, "cadastres.building", ["id", "buildingType", "roofType", "roofMaterial"]);
+        requireNumbers(bld, "cadastres.building", ["widthM", "lengthM", "heightM", "stories", "orientationRad"]);
+        point(bld.center, "cadastres.building.center");
+        openRing(bld.footprint, "cadastres.building.footprint");
+      }
+      const stats = object(cad.stats, "cadastres.settlement.stats");
+      requireNumbers(stats, "cadastres.settlement.stats", ["totalBuildings", "residentialBuildings", "totalRoofAreaM2", "totalStreetLengthM", "parcelCount", "generationMs", "finetuneMs"]);
+      report(cad.verificationBefore, "cadastres.settlement.verificationBefore");
+      report(cad.verificationAfter, "cadastres.settlement.verificationAfter");
+    }
+    const stats = object(r.stats, "cadastres.stats");
+    requireNumbers(stats, "cadastres.stats", ["settlementsCount", "totalBuildings", "totalStreetsKm", "totalRoofAreaKm2"]);
+    if (typeof stats.allPassing !== "boolean") issue("cadastres.stats.allPassing must be boolean");
   }
 
   const view = object(root.view, "view");
@@ -441,6 +600,10 @@ export function inspectCheckpoint(value: unknown): string[] {
   const visibility = object(view.visibility, "view.visibility");
   for (const key of ["geo", "bio", "human"]) if (typeof visibility[key] !== "boolean") issue(`Missing visibility flag ${key}`);
   if (visibility.population !== undefined && typeof visibility.population !== "boolean") issue("Missing visibility flag population");
+  // v2 adds resource / routes / cadastre flags; they stay optional for v1 files.
+  for (const key of ["resource", "routes", "cadastre"] as const) {
+    if (visibility[key] !== undefined && typeof visibility[key] !== "boolean") issue(`Missing visibility flag ${key}`);
+  }
   const raw = object(view.raw, "view.raw");
   for (const key of ["geography", "biosphere", "human"]) if (typeof raw[key] !== "boolean") issue(`Missing raw-view flag ${key}`);
   if (raw.population !== undefined && typeof raw.population !== "boolean") issue("Missing raw-view flag population");

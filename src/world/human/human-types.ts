@@ -1,12 +1,12 @@
 import type { GenProgress, Pt, VerificationReport } from "../types";
 
 // ---------------------------------------------------------------------------
-// LAYER 3 — HABITABLE ZONES (settlement SITES, not settlements)
+// LAYER 4 — HABITABLE ZONES (settlement SITES, not settlements)
 //
 // This layer answers one question: can humans live here? It marks camping
 // grounds, village sites, city sites and metropolis candidates with their
 // quality and available evidence. It deliberately carries NO people and NO
-// population. Population is time-dependent and belongs to Layer 4, generated
+// population. Population is time-dependent and belongs to Layer 5, generated
 // per zone against all three layers beneath.
 //
 //   Generation → creative, drops candidate sites anywhere.

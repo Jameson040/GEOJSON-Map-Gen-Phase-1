@@ -1,4 +1,5 @@
-import * as turf from "@turf/turf";
+import union from "@turf/union";
+import { polygon as turfPolygon, featureCollection as turfFeatureCollection } from "@turf/helpers";
 import type {
   BBox,
   ConflictRecord,
@@ -998,7 +999,7 @@ export function finetunePlanetShapes(macro: PlanetMacro): PlanetMacro {
       if (group.length < 2) continue;
       group.sort((a, b) => Number(b.isContinent) - Number(a.isContinent) || b.areaKm2 - a.areaKm2);
       const keeper = group[0];
-      let merged: any = turf.polygon([keeper.ring]);
+      let merged: any = turfPolygon([keeper.ring]);
       for (const other of group.slice(1)) {
         // A small island overlapping a continent is absorbed without a union:
         // unioning it in would pinch the coast and destroy the continent's
@@ -1007,7 +1008,7 @@ export function finetunePlanetShapes(macro: PlanetMacro): PlanetMacro {
         if (!absorbOnly) {
           try {
             const aligned = alignRingX(other.ring, polygonCentroid(keeper.ring)[0]);
-            const u = turf.union(turf.featureCollection([merged, turf.polygon([aligned])]));
+            const u = union(turfFeatureCollection([merged, turfPolygon([aligned])]));
             if (u) merged = u;
           } catch {
             /* keep going: an un-unionable sliver is simply absorbed */
@@ -1189,11 +1190,11 @@ export function finetunePlanetShapes(macro: PlanetMacro): PlanetMacro {
       let final = cand;
       const terranes = soft.filter((o) => o.areaKm2 >= ISLET_KM2);
       if (terranes.length) {
-        let merged: any = turf.polygon([cand]);
+        let merged: any = turfPolygon([cand]);
         for (const t of terranes) {
           try {
             const aligned = alignRingX(t.ring, polygonCentroid(cand)[0]);
-            const u = turf.union(turf.featureCollection([merged, turf.polygon([aligned])]));
+            const u = union(turfFeatureCollection([merged, turfPolygon([aligned])]));
             if (u) merged = u;
           } catch {
             /* un-unionable: treat as absorbed */

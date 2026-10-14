@@ -57,6 +57,7 @@ interface RegionBrowserProps {
   humans?: Map<string, HumanLayerResult>;
   pops?: Map<string, PopulationLayerResult>;
   routes?: Map<string, RouteLayerResult>;
+  cadastres?: Map<string, CadastreLayerResult>;
   activeRegionId: string | null;
   onOpen: (r: RegionDescriptor) => void;
   onRerollRegion?: (r: RegionDescriptor) => void;
@@ -75,6 +76,7 @@ function LayerStrip({
   human,
   population,
   routes,
+  cadastre,
   onLayer,
 }: {
   geo: GeneratedRegion | null;
@@ -83,9 +85,10 @@ function LayerStrip({
   human: HumanLayerResult | null;
   population: PopulationLayerResult | null;
   routes?: RouteLayerResult | null;
+  cadastre?: CadastreLayerResult | null;
   onLayer?: (layer: WorldLayerId) => void;
 }) {
-  const statuses = layerStatuses({ geo, resource, bio, human, population, routes });
+  const statuses = layerStatuses({ geo, resource, bio, human, population, routes, cadastre });
   return (
     <div className="mt-1.5 flex items-center gap-1">
       {statuses.map((s) => {
@@ -106,7 +109,7 @@ function LayerStrip({
             }}
             title={
               s.present
-                ? `${def.label}: ${s.count.toLocaleString()} · verifier ${s.verify?.passedChecks}/${s.verify?.totalChecks}${pass ? " ✓" : ""}`
+                ? `${def.label}: ${s.count.toLocaleString()} · verifier ${s.verify?.passedChecks}/${s.verify?.totalChecks}${pass ? " ✓" : ""}${s.stale ? ` · STALE (newer ${s.staleInputs.join(", ")})` : ""}`
                 : s.available
                 ? `Generate ${def.label} (L${def.index}) for this region`
                 : `${def.label} needs L${def.index - 1} first`
@@ -119,6 +122,7 @@ function LayerStrip({
           >
             {def.glyph} L{def.index}
             {s.present && typeof s.count === "number" && <span className="ml-0.5 opacity-80">{s.count >= 1000 ? `${(s.count / 1000).toFixed(1)}k` : s.count}</span>}
+            {s.present && s.stale && <span className="ml-0.5 opacity-90">↻</span>}
             {s.present && pass === false && <span className="text-rose-900">!</span>}
           </button>
         );
@@ -135,6 +139,7 @@ export function RegionBrowser({
   humans,
   pops,
   routes,
+  cadastres,
   activeRegionId,
   onOpen,
   onRerollRegion,
@@ -354,6 +359,7 @@ export function RegionBrowser({
                   human={humans?.get(r.id) ?? null}
                   population={pops?.get(r.id) ?? null}
                   routes={routes?.get(r.id) ?? null}
+                  cadastre={cadastres?.get(r.id) ?? null}
                   onLayer={onLayer ? (layer) => onLayer(r, layer) : undefined}
                 />
               )}
@@ -466,6 +472,14 @@ export function LayersPanel({ layers, onToggle, themeId, onTheme, counts, mode, 
                 <span className="flex items-center gap-1.5 font-mono text-[10px]">
                   {st?.present && (
                     <>
+                      {st.stale && (
+                        <span
+                          title={`Stale: an input layer (${st.staleInputs.join(", ")}) was regenerated after this layer. Re-generate it to pick up the newer inputs.`}
+                          className="rounded border border-amber-400/40 bg-amber-400/15 px-1 py-0.5 text-[9px] font-bold text-amber-300"
+                        >
+                          stale
+                        </span>
+                      )}
                       <span className="text-zinc-400">{st.count.toLocaleString()}</span>
                       <span className={st.verify?.passedAll ? "text-emerald-400" : "text-amber-400"}>
                         {st.verify?.passedChecks}/{st.verify?.totalChecks}

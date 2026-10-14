@@ -61,13 +61,13 @@ export function PopulationModal({
         {
           type: "FeatureCollection",
           metadata: {
-            generator: "Terra Ex Nihilo — Layer 4 Population",
+            generator: "Terra Ex Nihilo — Layer 5 Population",
             region: existing.regionName,
             era: existing.config.era,
             year: existing.config.year,
             targetScale: existing.config.targetScale,
             seed: existing.seedUsed,
-            contract: "Time-dependent people as generative history structure, attached to Layer-3 habitable zones (which carry no population). Re-runnable & scrubbable.",
+            contract: "Time-dependent people as generative history structure, attached to Layer-4 habitable zones (which carry no population). Re-runnable & scrubbable.",
           },
           features: [...existing.model.entries()].map(([zoneId, p]) => {
             const z = zoneById.get(zoneId)!;
@@ -112,8 +112,8 @@ export function PopulationModal({
               <Users className="h-5 w-5" />
             </div>
             <div>
-              <h2 className="text-lg font-semibold text-white">Layer 4 — Population · {region.descriptor.name}</h2>
-              <p className="text-xs text-zinc-400">Time-dependent actual people on top of the zones of L3, feeding on layers L1 + L2 beneath.</p>
+              <h2 className="text-lg font-semibold text-white">Layer 5 — Population · {region.descriptor.name}</h2>
+              <p className="text-xs text-zinc-400">Time-dependent actual people on top of the zones of L4, feeding on layers L1 + L3 beneath.</p>
             </div>
           </div>
           {!busy && (
@@ -135,7 +135,7 @@ export function PopulationModal({
         <div className="flex-1 space-y-4 overflow-y-auto p-6 text-xs">
           {!zones && (
             <div className="rounded-xl border border-amber-500/35 bg-amber-950/30 p-3 text-amber-200">
-              <strong>Layer 3 missing.</strong> Generate Habitable Zones for this region first.
+              <strong>Layer 4 missing.</strong> Generate Habitable Zones for this region first.
             </div>
           )}
 

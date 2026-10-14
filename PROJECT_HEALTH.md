@@ -1,39 +1,105 @@
 # Project Health Checkpoint
 
-## Verified in This Coding Session
+## Verified in This Coding Session (2026-10-14 improvement pass)
 
-- The baseline production Vite build succeeded before changes.
-- The updated production Vite build also succeeded after the stability and backup changes.
-- All source modules referenced by the existing application could be bundled at baseline.
-- `package-lock.json` exists. `tsx` is now installed and locked so verifier scripts can be run without downloading an unpinned runner.
+All commands below pass with zero failures:
 
-## Confirmed Problems Repaired
+- `npm run check` — static health: project files, lockfile parity, strict
+  TypeScript, import targets, generation gate, lifecycle eviction, settlement
+  spacing, tar archive integrity, **world-layer registry DAG + invalidation
+  closures**, **cadastre cache-key fingerprinting**.
+- `npm run smoke` — executes the full **seven-layer** pipeline (geography →
+  resources → biosphere → habitable zones → population → routes → cadastre)
+  with content hashes proving the frozen layers are never modified, exercises
+  cadastre cache invalidation, and round-trips a checkpoint containing every
+  layer — including a v1-checkpoint backward-compatibility read.
+- `npm run verify` — full multi-size-class, multi-detail-level CLI verifier:
+  ALL LAYERS VERIFIED, 0 violations after finetune everywhere.
+- `npm run build` — production single-file build.
 
-- Async generators use module-level ID counters. The workspace now serializes generation jobs synchronously and prevents React Strict Mode from starting the initial planet twice.
-- Generation failures previously appeared only in console logs. Failures now display an actionable workspace message, preserve completed data, and release the generation lock in `finally`.
-- Unloading a region previously left its biosphere, human layer, and cached geographic indexes resident. All dependent state and both raw/final indexes are now evicted together.
-- Rerolls and whole-planet replacement now clear obsolete focus requests and cached views. Whole-planet generation requires explicit confirmation when regions exist.
-- Canvas resize observers previously captured the initial draw callback. They now use the latest viewport/layers, avoid redundant backing-buffer resets, and cancel animation frames on unmount.
-- Map zoom-control clicks no longer trigger map-selection or drag actions. Hidden biological/human overlays no longer leave stale hover cards.
-- Region focus requests are scoped to their tab; setup forms now reload the saved parameters of the selected world/layer instead of silently keeping another region's settings.
-- View-level error boundaries keep a failed map or sidebar from destroying the workspace or hiding the Backup toolbar. Async drawing errors are also surfaced without triggering an error-render loop.
-- The geography visibility control was enabled but did nothing. It now controls display without changing generated geographic data.
-- Equal-tier settlements with different spacing radii could be accepted by finetune and immediately rejected by the verifier. One symmetric rule now serves both.
-- Capital reclassification previously ignored the new type's habitat/food prerequisites. Only compatible sites can be reclassified. Final human-layer checks reconcile late removals with the supporting hierarchy.
-- The CLI verifier ignored failed Tier-1 checks in its final exit status. They now contribute to failures.
-- Lower-layer immutability in the CLI audit is checked with content hashes, not just equal counts.
-- Source and generated-work backup/restore paths have been added without altering geographic or biosphere generation algorithms.
+## Confirmed Problems Repaired in This Pass
 
-## Not Yet Runtime-Verified Here
+- **Cadastre JIT cache staleness (correctness bug):** the cache key was
+  `regionId::settlementId` only, and `clearCadastreCache` had no callers.
+  Because the frozen generators restart their ID counters, re-rolling a
+  region served the previous generation's village geometry at deep zoom, and
+  re-running the population left roofs scaled for the old era. The key now
+  fingerprints the population model and the cadastre config, and the world
+  store clears the cache whenever geography or habitable zones are
+  regenerated, population is re-run, a region is unloaded, or a checkpoint is
+  restored. The smoke test locks this in.
+- **Checkpoint covered only 4 of 7 layers:** resources, routes, cadastres and
+  the resource filter config were silently dropped on save. Checkpoint format
+  v2 serialises all seven layers plus their visibility flags; v1 files remain
+  restorable (missing layers arrive empty). The validator rejects dangling
+  layer parents for the new layers exactly as it does for the older ones.
+- **Registry-driven invalidation:** the hand-written `withoutRegion` cascades
+  in `App.tsx` were replaced by `useWorldLayers` (workspace/world-store.ts)
+  driven by `layerConsumers()` in the layer registry. Three latent leaks the
+  old matrix had are fixed as a side effect: a new planet previously kept
+  stale routes/cadastres (region IDs restart per planet), unloading never
+  evicted the cadastre cache, and population re-runs never refreshed
+  cadastres.
+- **Cascade semantics:** "Cascade All" reused existing layers for every step
+  except population, which it always re-ran. All seven steps now reuse
+  existing results, and the button is labelled L1→L7 as it actually runs.
+- **Layer numbering unified:** the UI, modals, hover cards, generator-file
+  comments and CLI labels now all follow the registry (resources L2, bio L3,
+  habitable zones L4, population L5, routes L6, cadastre L7); the remaining
+  hard-coded strings in the ribbon are derived from `LAYER_BY_ID`.
+- **Staleness badges:** re-running an *optional* input (e.g. re-tuning the
+  resource filter) no longer silently leaves consumers built on old data —
+  the Layers panel and region strips mark such layers `stale` with the newer
+  input named.
+- **Full-world GeoJSON export:** the region export button now emits every
+  generated layer in one FeatureCollection (features tagged
+  `properties.layer`), with roofs capped and cadastre rings closed per the
+  GeoJSON spec. Pure-geography export remains available via
+  `exportRegionGeoJSON`.
+- **Dependency hygiene:** the unused `@resvg/resvg-js` dependency was removed
+  and `tsx` moved to devDependencies; the monolithic `@turf/turf` import was
+  narrowed to `@turf/union` + `@turf/helpers` (output proven byte-identical
+  across three seeds via SHA-256 before/after). The package is named
+  `terra-ex-nihilo` and the verification workflow is exposed as npm scripts
+  (`check` / `smoke` / `verify` / `backup`).
+- **Cadastre verification aggregation:** the Layers panel previously showed
+  one arbitrary settlement's verifier report for L7; reports are now merged
+  across all surveyed settlements (counts summed, pass requires all).
 
-The current tool environment provides the production build but no arbitrary command runner or interactive browser. The new static health script, seeded smoke tests, full verifier, browser archive download, and restore interaction must be run locally using `BACKUP.md`. Do not infer that every procedural seed passes from a successful Vite build. Vite bundling is not a substitute for the strict TypeScript check.
+## Earlier Repairs (previous audit, still in force)
 
-The dependency install also reported two npm advisory findings (one low, one high). Their dependency paths and fixes have not been audited here. Run `npm audit` before using this checkpoint as a production release; avoid an automatic force-upgrade of the frozen foundation.
+Async generation is serialised through the workspace gate; failures surface
+in the UI and release locks in `finally`; unloading evicts dependent state
+and indexes; rerolls and planet replacement clear focus and caches; canvas
+resize observers and zoom controls behave; region focus requests are
+tab-scoped; error boundaries protect the workspace; equal-tier settlement
+spacing is symmetric in finetune and verifier alike; capital reclassification
+respects habitat prerequisites; the CLI verifier counts failed Tier-1 checks.
 
 ## Architectural Work Deferred
 
-- Layer 3 still carries legacy fixed population. Your requested habitat-only layer and time-dependent, per-settlement population layer are pending, not implemented in this health checkpoint.
-- Biogeographic source coverage and licensing should be reviewed before claiming an exhaustive edible-crop dataset or production-grade ecological realism.
-- Long synchronous finetune stages can still block the main browser thread. Worker-based execution is future performance work, not a change to the frozen algorithms in this checkpoint.
+- **Web Worker generation** — long stages (human finetune ≈ 2.8 s per
+  continent) still block the main thread between progress ticks. The
+  generators are pure `(region, config) → result` functions with progress
+  callbacks already plumbed, so a worker RPC is mechanical, but it has not
+  been done in this pass and needs browser verification.
+- **Boundary-scoped IDs** — module-level counters still require the
+  generation gate; the cadastre cache fix removes the known correctness
+  hazard, but globally-unique IDs (e.g. `${regionSeed}:set:17`) remain future
+  hardening.
+- **Cos-latitude km correction** — `KM_PER_UNIT` is the equatorial scale and
+  east-west distances/areas are progressively inflated toward the poles
+  (up to ~2×). Correcting it changes verifier baselines and generated data;
+  it must be done behind golden-seed tests.
+- **Route pathfinder resolution** — the A* cost grid is fixed at 100×100
+  (~59 km/cell on a supercontinent). Scaling it with `linearScaleKm` changes
+  route outputs and is deferred for the same reason.
+- **Per-zone water model** — `waterShortage()` is still a region-wide
+  boolean that ignores its `year` parameter, and the population layer's raw
+  model verifies with 0 violations (no adversarial bite).
+- Run `npm audit` before any production release; two advisories (one low,
+  one high) were reported at install time and have not been audited here.
 
-The geographic and biosphere generator/rule/catalog files were not edited during this audit. Backup first, then change only the layer above those foundations.
+The geographic and biosphere generator/rule/catalog algorithms were not
+edited during this pass (comments and layer numbering only). Back up first,
+then change only the layer above those foundations.

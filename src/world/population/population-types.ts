@@ -1,7 +1,7 @@
 import type { GenProgress, VerificationReport } from "../types";
 
 // ---------------------------------------------------------------------------
-// LAYER 4 — POPULATION (time-dependent, per habitable zone)
+// LAYER 5 — POPULATION (time-dependent, per habitable zone)
 //
 // The first layer that answers "how many people actually live here, and did,
 // and will". Generated PER ZONE (cascading, like Tier 2 was per-continent):

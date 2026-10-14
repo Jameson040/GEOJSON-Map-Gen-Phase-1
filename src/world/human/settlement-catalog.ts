@@ -3,7 +3,7 @@ import type { SettlementDef, SettlementTier, SettlementType } from "./human-type
 // ---------------------------------------------------------------------------
 // HABITABLE-SITE CATALOG — every kind of place humans might live, from a
 // hunter's seasonal ground to a port-metropolis candidate. Capacities are
-// STRUCTURAL site bands, not occupied headcounts: population is Layer 4's job.
+// STRUCTURAL site bands, not occupied headcounts: population is Layer 5's job.
 // Bands follow the conventional hierarchy (hamlet < 500, village 500–5k,
 // town 5k–50k, city 50k–1M, metropolis 1M+).
 // ---------------------------------------------------------------------------

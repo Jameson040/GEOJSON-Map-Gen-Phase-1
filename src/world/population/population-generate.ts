@@ -15,7 +15,7 @@ import { dist } from "../geom";
 import { kmToUnits } from "../constants";
 
 // ---------------------------------------------------------------------------
-// LAYER 4 — POPULATION MODEL
+// LAYER 5 — POPULATION MODEL
 //
 //   Generation → model an occupancy curve for EVERY zone, no rules: camps
 //                bunch up in deserts, metropolis zones run dry while camps
