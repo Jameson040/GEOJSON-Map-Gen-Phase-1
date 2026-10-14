@@ -103,6 +103,22 @@ export interface RouteFinetuneReport {
   elapsedMs: number;
 }
 
+/** Serialisable summary of the math-only derived heightfield (L6 consumer). */
+export interface HeightfieldSummary {
+  cols: number;
+  rows: number;
+  cellKm: number;
+  riversConditioned: number;
+  riverViolations: number;
+  lakesFlattened: number;
+  lakeViolations: number;
+  peaksChecked: number;
+  peaksHonored: number;
+  rangesChecked: number;
+  rangesHonored: number;
+  bakeMs: number;
+}
+
 export interface RouteLayerResult {
   regionId: string;
   regionName: string;
@@ -112,6 +128,8 @@ export interface RouteLayerResult {
   rawRoutes: RouteFeature[];
   stats: RouteStats;
   report: RouteFinetuneReport;
+  /** Derived elevation field used by the pathfinder (math-only, never rendered). */
+  heightfield?: HeightfieldSummary;
   verifyBefore: VerificationReport;
   verifyAfter: VerificationReport;
   generatedAt: number;

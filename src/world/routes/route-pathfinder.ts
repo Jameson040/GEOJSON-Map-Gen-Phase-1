@@ -3,6 +3,8 @@ import { dist } from "../geom";
 import { kmToUnits, unitsToKm } from "../constants";
 import { BioEnvReader } from "../bio/bio-env";
 import { makeRng } from "../rng";
+import { HeightField } from "../heightfield";
+import { cellNoise } from "../noise";
 
 // ---------------------------------------------------------------------------
 // TERRAIN-AWARE A* PATHFINDING & CORRIDOR RELAXATION
@@ -39,21 +41,10 @@ function channelToll(order: number): number {
   return 2 + Math.max(0, order - 1) * 4.5; // order 1 ≈ 2, order 5 ≈ 20
 }
 
-/** Deterministic per-cell hash → 0..1 (seeded micro-terrain: no RNG state). */
-function cellNoise(col: number, row: number, seed: string): number {
-  let h = (2166136261 ^ (col * 374761393) ^ (row * 668265263)) >>> 0;
-  for (let i = 0; i < seed.length; i++) {
-    h = ((h ^ seed.charCodeAt(i)) * 16777619) >>> 0;
-  }
-  h = (h ^ (h >>> 13)) >>> 0;
-  h = (h * 1274126177) >>> 0;
-  return (h ^ (h >>> 16)) / 4294967296;
-}
-
 export class RoutePathfinder {
   private geo: BioEnvReader;
   private width: number;
-  private height: number;
+  private heightDim: number;
   private gridCols = 180;
   private gridRows = 180;
   private minX: number;
@@ -63,6 +54,10 @@ export class RoutePathfinder {
   private seed: string;
   private cellDiagKm: number;
   private channelDetectKm: number;
+  /** Derived elevation at each pathfinder cell centre (metres). */
+  private cellElev: Float32Array;
+  /** Math-only derived heightfield (consistent with the carved rivers). */
+  readonly height: HeightField;
   // Terrain traversal cost grid: [row * cols + col]
   private landCost: Float32Array;
   private seaCost: Float32Array;
@@ -83,13 +78,14 @@ export class RoutePathfinder {
   constructor(region: GeneratedRegion, seed = region.descriptor.regionSeed) {
     this.geo = new BioEnvReader(region);
     this.seed = seed;
+    this.height = new HeightField(region, this.geo.mask, seed);
     const b = region.descriptor.bbox;
     this.minX = b.minX;
     this.minY = b.minY;
     this.width = Math.max(1, b.maxX - b.minX);
-    this.height = Math.max(1, b.maxY - b.minY);
+    this.heightDim = Math.max(1, b.maxY - b.minY);
     this.cellW = this.width / this.gridCols;
-    this.cellH = this.height / this.gridRows;
+    this.cellH = this.heightDim / this.gridRows;
     // Cell-scale detection radius: a river vertex marks its host cell as
     // channel. Half the cell diagonal guarantees every vertex falls inside
     // its nearest cell centre's radius, whatever the map scale.
@@ -99,6 +95,7 @@ export class RoutePathfinder {
     const totalCells = this.gridCols * this.gridRows;
     this.landCost = new Float32Array(totalCells);
     this.seaCost = new Float32Array(totalCells);
+    this.cellElev = new Float32Array(totalCells);
     this.corridorDiscount = new Float32Array(totalCells).fill(1.0);
     this.riverChannel = new Uint8Array(totalCells);
     this.riverOrder = new Uint8Array(totalCells);
@@ -129,6 +126,7 @@ export class RoutePathfinder {
 
         // Land: impassable for ships
         this.seaCost[idx] = 9999.0;
+        this.cellElev[idx] = this.height.elevAt(p);
 
         // --- Lakes: roads must go around (a second A* attempt may ferry across) ---
         if (this.geo.pointInLake(p)) {
@@ -140,8 +138,10 @@ export class RoutePathfinder {
         // --- Land Route Costs ---
         let cost = 1.0;
         if (env.inRange) {
-          // Mountain peak / ridge
-          cost += 16.0;
+          // Mountain ridge: rugged going on top of whatever the heightfield's
+          // slope term charges for the actual climb (was a flat +16 before a
+          // continuous elevation field existed).
+          cost += 9.0;
           this.mountainRidge[idx] = 1;
         } else if (env.inPlateau) {
           cost += 2.8;
@@ -522,7 +522,18 @@ export class RoutePathfinder {
         if (nextCost >= 5000.0) continue; // impassable
 
         const discount = this.corridorDiscount[nextIdx];
-        const stepCost = dDists[dir] * nextCost * discount;
+        // Slope term from the derived heightfield: climbing is expensive per
+        // metre risen (carts and mules), gentle descent is nearly free. This
+        // is what lets A* find genuine passes and valley floors instead of
+        // treating a mountain range as a uniform wall.
+        let slopeFactor = 1;
+        if (!isSeaLane) {
+          const stepKm = dDists[dir] * this.cellDiagKm * 0.72; // ≈ avg cell size
+          const dh = this.cellElev[nextIdx] - this.cellElev[current];
+          const grade = stepKm > 0 ? dh / stepKm : 0; // metres per km
+          slopeFactor = 1 + Math.max(0, grade) / 22 + Math.max(0, -grade) / 95;
+        }
+        const stepCost = dDists[dir] * nextCost * discount * slopeFactor;
         const tentativeG = gScore[current] + stepCost;
 
         if (tentativeG < gScore[nextIdx]) {

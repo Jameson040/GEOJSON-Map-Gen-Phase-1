@@ -235,6 +235,16 @@ async function smoke() {
   assert.equal(hash(human), humanHash, "Route layer changed frozen settlements");
   assert(route.verifyAfter.passedAll, "Route verifier failed");
   assert(route.routes.length > 0, "No routes were generated");
+  // The math-only derived heightfield must agree with the frozen hydrology:
+  // every river flows downhill in it, every lake sits in a bowl, and every
+  // stated summit survives the conditioning.
+  assert(route.heightfield, "Route layer did not report its derived heightfield");
+  assert.equal(route.heightfield.riverViolations, 0, "Heightfield rivers climb");
+  assert.equal(route.heightfield.lakeViolations, 0, "Heightfield lakes sit above their shoreline");
+  assert(
+    route.heightfield.peaksHonored >= Math.ceil(route.heightfield.peaksChecked * 0.995),
+    "Heightfield lost stated summits"
+  );
   const routeHash = hash(route);
   console.log(`PASS Route network generated: ${route.routes.length} routes, ${route.stats.totalKm} km, ${route.stats.connectedSettlementsCount} connected settlements`);
 

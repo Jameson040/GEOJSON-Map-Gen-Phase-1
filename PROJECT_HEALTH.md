@@ -146,6 +146,42 @@ another. Roads are computed on the **full frozen geography** (every river
 vertex, range/lake polygon and biome patch via `BioEnvReader`), never on
 the LOD-filtered set the canvas happens to show.
 
+## Derived Heightfield — Math Only (2026-10-14, same session)
+
+Confirmed: the generator has **no heightmap** — elevation exists only as
+attributes (range/plateau crest values, summit points, volcanoes), and the
+rivers were carved by the LandMask's coast-distance gradient, not by
+terrain. Added `src/world/heightfield.ts`: a **read-only, math-only**
+elevation raster derived from the frozen L1 features. Never rendered, never
+exported, never written back — its only consumer today is the road
+pathfinder.
+
+- **Construction** (~256×256 cells, 130–720 ms bake): continental dome from
+  the SAME coast-distance field the rivers descend → range ribbons with
+  skirt falloff (crest honoured) → plateau slabs → summit/volcano cones
+  (prominence-scaled radius, host cell pinned to the exact stated
+  elevation) → seeded micro-grain (skips surveyed summits).
+- **Hydrological conditioning — the thin-ice part.** The rivers already
+  exist, so the field must agree with them: (1) each river (trunks first)
+  is walked source→mouth along its whole polyline, carving any cell that
+  would make the channel climb and pulling neighbours part-way down so
+  real valley floors form; (2) lakes are planed to a surface below their
+  lowest land shoreline cell (summit host cells stay dry as islands;
+  ocean-rim lagoons are skipped); (3) an enforcement pass re-walks every
+  river in alternating order to a fixpoint, planing residual climbs with
+  **non-strict** constraints — strict descent constraints were found to
+  ratchet forever inside constraint cycles (two rivers crossing in
+  opposite directions), while flats collapse cycles and converge.
+- **Measured invariants** (now gated in the smoke test): 0 climbing rivers
+  (1,399 checked across 6 seeds), 0 leaking lakes, 100% of 26,448 stated
+  summits honored, 100% of range crests reached, byte-identical across
+  regenerations, frozen features untouched.
+- **Road consumption:** the A* step cost now includes a heightfield slope
+  term (climbing ≈ +1 per 22 m/km, gentle descent nearly free) and the
+  categorical mountain penalty dropped +16 → +9 — roads now find genuine
+  passes and valley floors instead of treating a range as a uniform wall.
+  Observed road grades: 95th percentile ≤ 42 m/km, max 96 m/km.
+
 ## Confirmed Problems Repaired in This Pass
 
 - **Cadastre JIT cache staleness (correctness bug):** the cache key was

@@ -324,6 +324,7 @@ export async function generateRouteLayer(
     rawRoutes,
     stats,
     report,
+    heightfield: { ...pathfinder.height.report },
     verifyBefore,
     verifyAfter,
     generatedAt: Date.now(),
