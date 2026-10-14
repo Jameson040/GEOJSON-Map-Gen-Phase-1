@@ -2,7 +2,7 @@ import { useState } from "react";
 import type { GeneratedRegion, GenProgress } from "../world/types";
 import type { HumanLayerResult, Settlement } from "../world/human/human-types";
 import type { PopulationLayerResult } from "../world/population/population-types";
-import type { CadastreConfig, CadastreLayerResult } from "../world/cadastre/cadastre-types";
+import type { CadastreConfig, CadastreLayerResult, SettlementMorphology } from "../world/cadastre/cadastre-types";
 import { generateCadastreLayer, peekCachedCadastre, hasCachedCadastre } from "../world/cadastre/cadastre-cache";
 import { X, Sparkles, Building2, ShieldCheck, Compass, Loader2 } from "lucide-react";
 import { TIER_LABELS } from "../world/human/settlement-catalog";
@@ -31,6 +31,8 @@ export function CadastreModal({
   const [density, setDensity] = useState(1.0);
   const [pitchMult, setPitchMult] = useState(1.0);
   const [customSeed, setCustomSeed] = useState("");
+  const [morphologyOverride, setMorphologyOverride] = useState<SettlementMorphology | "auto">("auto");
+  const [wallsEnabled, setWallsEnabled] = useState(true);
   const [busy, setBusy] = useState(false);
   const [progress, setProgress] = useState<GenProgress | null>(null);
 
@@ -44,6 +46,8 @@ export function CadastreModal({
         buildingDensity: density,
         roofPitchMultiplier: pitchMult,
         customSeed: customSeed.trim() || undefined,
+        forceMorphology: morphologyOverride === "auto" ? undefined : morphologyOverride,
+        enableDefensiveWalls: wallsEnabled,
       };
       const result = await generateCadastreLayer(
         region,
@@ -147,6 +151,45 @@ export function CadastreModal({
             </div>
           </div>
 
+          {/* Universal Morphology Archetype & Defense Enceinte */}
+          <div className="grid grid-cols-2 gap-4">
+            <div className="space-y-1.5 rounded-xl border border-white/10 bg-white/[0.02] p-3.5">
+              <label className="font-semibold text-zinc-200">Morphology Archetype</label>
+              <select
+                value={morphologyOverride}
+                onChange={(e) => setMorphologyOverride(e.target.value as SettlementMorphology | "auto")}
+                className="w-full rounded-lg border border-white/10 bg-black/60 px-2.5 py-1.5 text-xs text-zinc-100 focus:border-purple-400 focus:outline-none"
+              >
+                <option value="auto">Auto (Context-Driven Archetype)</option>
+                <option value="walled_concentric">Walled Concentric (Watabou Enceinte)</option>
+                <option value="linear_ribbon">Linear Ribbon (Roadside Strip Crofts)</option>
+                <option value="waterfront_port">Waterfront Port (Quays & Jetties)</option>
+                <option value="crossroads_market">Crossroads Market (Village Green)</option>
+              </select>
+              <p className="text-[10px] text-zinc-400">
+                Auto detects waterways for quays, stone curtain walls for cities, and ribbon crofts for hamlets.
+              </p>
+            </div>
+
+            <div className="flex flex-col justify-between rounded-xl border border-white/10 bg-white/[0.02] p-3.5">
+              <div>
+                <label className="font-semibold text-zinc-200">Defensive Enceinte</label>
+                <p className="mt-1 text-[10px] text-zinc-400">
+                  Encloses towns and cities within stone curtain walls, bastion towers, and fortified gatehouses.
+                </p>
+              </div>
+              <label className="mt-2 flex cursor-pointer items-center gap-2">
+                <input
+                  type="checkbox"
+                  checked={wallsEnabled}
+                  onChange={(e) => setWallsEnabled(e.target.checked)}
+                  className="rounded border-zinc-700 bg-zinc-900 text-purple-500 focus:ring-purple-400"
+                />
+                <span className="text-xs text-zinc-200">Enable City Curtain Walls</span>
+              </label>
+            </div>
+          </div>
+
           {/* Custom Seed Override */}
           <div className="space-y-1">
             <label className="text-[11px] font-semibold text-zinc-300">
@@ -169,6 +212,7 @@ export function CadastreModal({
             <div className="max-h-40 space-y-1 overflow-y-auto rounded-xl border border-white/10 bg-black/30 p-2">
               {human.settlements.slice(0, 15).map((s) => {
                 const isCached = hasCachedCadastre(region.descriptor.id, s.id);
+                const cachedPlan = peekCachedCadastre(region.descriptor.id, s.id);
                 return (
                   <div
                     key={s.id}
@@ -180,6 +224,11 @@ export function CadastreModal({
                       <span className="font-mono text-[10px] text-zinc-400">
                         {TIER_LABELS[s.tier]}
                       </span>
+                      {cachedPlan && (
+                        <span className="rounded bg-purple-500/15 px-1.5 py-0.5 font-mono text-[9px] text-purple-300">
+                          {cachedPlan.morphology.replace("_", " ")}
+                        </span>
+                      )}
                       <span
                         className={`rounded px-1.5 py-0.5 font-mono text-[9px] ${
                           isCached
@@ -187,7 +236,7 @@ export function CadastreModal({
                             : "bg-white/5 text-zinc-500"
                         }`}
                       >
-                        {isCached ? "cached" : "on-demand"}
+                        {isCached ? `${cachedPlan?.buildings.length || 0} blds` : "on-demand"}
                       </span>
                     </div>
                     {onFocusSettlement && (

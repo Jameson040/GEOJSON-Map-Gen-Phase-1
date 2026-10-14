@@ -80,7 +80,8 @@ export function runCadastreFinetune(
           b.roofType,
           b.roofMaterial,
           b.orientationRad,
-          b.facets[0]?.pitchDegrees ?? 45
+          b.facets[0]?.pitchDegrees ?? 45,
+          b.establishment
         );
       }
     }
@@ -122,7 +123,8 @@ export function runCadastreFinetune(
           b.roofType,
           b.roofMaterial,
           b.orientationRad,
-          b.facets[0]?.pitchDegrees ?? 45
+          b.facets[0]?.pitchDegrees ?? 45,
+          b.establishment
         );
       }
     }
@@ -168,7 +170,8 @@ export function runCadastreFinetune(
               bj.roofType,
               bj.roofMaterial,
               bj.orientationRad,
-              bj.facets[0]?.pitchDegrees ?? 45
+              bj.facets[0]?.pitchDegrees ?? 45,
+              bj.establishment
             );
           } else if (jIsWell) {
             // Push i away only
@@ -184,7 +187,8 @@ export function runCadastreFinetune(
               bi.roofType,
               bi.roofMaterial,
               bi.orientationRad,
-              bi.facets[0]?.pitchDegrees ?? 45
+              bi.facets[0]?.pitchDegrees ?? 45,
+              bi.establishment
             );
           } else {
             // Push both apart symmetrically
@@ -203,7 +207,8 @@ export function runCadastreFinetune(
               bi.roofType,
               bi.roofMaterial,
               bi.orientationRad,
-              bi.facets[0]?.pitchDegrees ?? 45
+              bi.facets[0]?.pitchDegrees ?? 45,
+              bi.establishment
             );
 
             buildings[j] = createBuildingFootprint(
@@ -217,7 +222,8 @@ export function runCadastreFinetune(
               bj.roofType,
               bj.roofMaterial,
               bj.orientationRad,
-              bj.facets[0]?.pitchDegrees ?? 45
+              bj.facets[0]?.pitchDegrees ?? 45,
+              bj.establishment
             );
           }
         }
@@ -259,7 +265,8 @@ export function runCadastreFinetune(
             b.roofType,
             b.roofMaterial,
             b.orientationRad,
-            b.facets[0]?.pitchDegrees ?? 45
+            b.facets[0]?.pitchDegrees ?? 45,
+            b.establishment
           );
           b = buildings[i];
         }

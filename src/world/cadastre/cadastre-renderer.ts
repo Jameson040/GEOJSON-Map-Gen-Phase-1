@@ -135,6 +135,55 @@ export function drawSettlementCadastre(opts: CadastreRenderOptions): void {
   }
 
   // =========================================================================
+  // Pass 0C: Waterfront Wooden Piers & Jetties
+  // =========================================================================
+  if (cadastre.waterfront && zoom >= 20) {
+    ctx.save();
+    ctx.lineCap = "butt";
+
+    for (const pier of cadastre.waterfront.piers) {
+      const x1 = toX(pier.start[0]);
+      const y1 = toY(pier.start[1]);
+      const x2 = toX(pier.end[0]);
+      const y2 = toY(pier.end[1]);
+      const pierWidthPx = Math.max(2.5, pier.widthM * metersToPx);
+
+      // Pier drop shadow into water
+      ctx.strokeStyle = "rgba(10, 30, 45, 0.5)";
+      ctx.lineWidth = pierWidthPx + Math.max(1.0, 1.2 * metersToPx);
+      ctx.beginPath();
+      ctx.moveTo(x1 + 1.5, y1 + 1.5);
+      ctx.lineTo(x2 + 1.5, y2 + 1.5);
+      ctx.stroke();
+
+      // Wooden timber deck
+      ctx.strokeStyle = "#78350f";
+      ctx.lineWidth = pierWidthPx;
+      ctx.beginPath();
+      ctx.moveTo(x1, y1);
+      ctx.lineTo(x2, y2);
+      ctx.stroke();
+
+      // Lighter plank center
+      ctx.strokeStyle = "#92400e";
+      ctx.lineWidth = Math.max(1.0, pierWidthPx * 0.6);
+      ctx.beginPath();
+      ctx.moveTo(x1, y1);
+      ctx.lineTo(x2, y2);
+      ctx.stroke();
+
+      // Wooden bollards/posts at pier tip
+      if (zoom >= 45) {
+        ctx.fillStyle = "#451a03";
+        ctx.beginPath();
+        ctx.arc(x2, y2, Math.max(1.2, 0.8 * metersToPx), 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+    ctx.restore();
+  }
+
+  // =========================================================================
   // Pass 1: Street Network & Plazas
   // =========================================================================
   ctx.save();
@@ -166,6 +215,129 @@ export function drawSettlementCadastre(opts: CadastreRenderOptions): void {
     ctx.stroke();
   }
   ctx.restore();
+
+  // =========================================================================
+  // Pass 1B: Defensive Curtain Walls, Towers & Gatehouses (Watabou Enceinte)
+  // =========================================================================
+  if (cadastre.defense && zoom >= 20) {
+    const def = cadastre.defense;
+    const wallThickPx = Math.max(2.5, def.wallThicknessM * metersToPx);
+
+    ctx.save();
+    ctx.lineCap = "round";
+    ctx.lineJoin = "round";
+
+    // 1. Curtain wall ground shadow (SE Azimuth)
+    ctx.strokeStyle = "rgba(15, 23, 42, 0.4)";
+    ctx.lineWidth = wallThickPx + Math.max(1.5, 2.0 * metersToPx);
+    for (const wallSeg of def.curtainWalls) {
+      if (wallSeg.length < 2) continue;
+      ctx.beginPath();
+      const sOffX = 1.5 * metersToPx;
+      const sOffY = 1.5 * metersToPx;
+      ctx.moveTo(toX(wallSeg[0][0]) + sOffX, toY(wallSeg[0][1]) + sOffY);
+      for (let i = 1; i < wallSeg.length; i++) {
+        ctx.lineTo(toX(wallSeg[i][0]) + sOffX, toY(wallSeg[i][1]) + sOffY);
+      }
+      ctx.stroke();
+    }
+
+    // 2. Main stone curtain wall base
+    ctx.strokeStyle = "#3f3f46"; // Dark quarried stone
+    ctx.lineWidth = wallThickPx;
+    for (const wallSeg of def.curtainWalls) {
+      if (wallSeg.length < 2) continue;
+      ctx.beginPath();
+      ctx.moveTo(toX(wallSeg[0][0]), toY(wallSeg[0][1]));
+      for (let i = 1; i < wallSeg.length; i++) {
+        ctx.lineTo(toX(wallSeg[i][0]), toY(wallSeg[i][1]));
+      }
+      ctx.stroke();
+    }
+
+    // 3. Parapet wall walkway
+    ctx.strokeStyle = "#71717a"; // Lighter stone walkway
+    ctx.lineWidth = Math.max(1.0, wallThickPx * 0.45);
+    for (const wallSeg of def.curtainWalls) {
+      if (wallSeg.length < 2) continue;
+      ctx.beginPath();
+      ctx.moveTo(toX(wallSeg[0][0]), toY(wallSeg[0][1]));
+      for (let i = 1; i < wallSeg.length; i++) {
+        ctx.lineTo(toX(wallSeg[i][0]), toY(wallSeg[i][1]));
+      }
+      ctx.stroke();
+    }
+
+    // 4. Defensive Bastion Towers
+    for (const tow of def.towers) {
+      const tx = toX(tow.center[0]);
+      const ty = toY(tow.center[1]);
+      const towR = Math.max(2.8, tow.radiusM * metersToPx);
+
+      // Tower shadow
+      ctx.fillStyle = "rgba(15, 23, 42, 0.42)";
+      ctx.beginPath();
+      ctx.arc(tx + 2, ty + 2, towR, 0, Math.PI * 2);
+      ctx.fill();
+
+      // Stone tower body
+      ctx.fillStyle = "#3f3f46";
+      ctx.strokeStyle = "#18181b";
+      ctx.lineWidth = Math.max(0.6, 0.8 * metersToPx);
+      ctx.beginPath();
+      ctx.arc(tx, ty, towR, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+
+      // Tower conical roof or battlement
+      ctx.fillStyle = tow.isGateTower ? "#1e293b" : "#475569";
+      ctx.beginPath();
+      ctx.arc(tx, ty, towR * 0.72, 0, Math.PI * 2);
+      ctx.fill();
+
+      // Spire tip / arrow slit dot
+      if (zoom >= 60) {
+        ctx.fillStyle = "#f8fafc";
+        ctx.beginPath();
+        ctx.arc(tx, ty, Math.max(0.8, 0.5 * metersToPx), 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+
+    // 5. Gatehouses
+    for (const gate of def.gates) {
+      const gx = toX(gate.center[0]);
+      const gy = toY(gate.center[1]);
+      if (zoom >= 30) {
+        ctx.save();
+        ctx.translate(gx, gy);
+        ctx.rotate(gate.roadAngleRad);
+        const gW = Math.max(4.0, gate.widthM * metersToPx);
+        const gD = Math.max(3.0, gate.depthM * metersToPx);
+
+        // Stone gate lintel / arch
+        ctx.fillStyle = "#27272a";
+        ctx.fillRect(-gD / 2, -gW / 2, gD, gW);
+
+        // Inner carriageway opening
+        ctx.fillStyle = "#94a3b8";
+        ctx.fillRect(-gD / 2, -(gW - 2) / 2, gD, gW - 2);
+
+        // Iron portcullis grate at deep zoom
+        if (zoom >= 75) {
+          ctx.strokeStyle = "#09090b";
+          ctx.lineWidth = 1;
+          ctx.beginPath();
+          ctx.moveTo(0, -(gW - 2) / 2);
+          ctx.lineTo(0, (gW - 2) / 2);
+          ctx.stroke();
+        }
+        ctx.restore();
+      }
+    }
+
+    ctx.restore();
+  }
 
   // =========================================================================
   // Pass 2: Ground Cast Shadows (SE Azimuth)
@@ -372,10 +544,11 @@ export function drawSettlementCadastre(opts: CadastreRenderOptions): void {
       ctx.restore();
     }
 
-    // Pass 3G: Micro-labels at Deep Zoom
-    if (
-      zoom >= 260 &&
-      (b.buildingType === "chapel" ||
+    // Pass 3G: Micro-labels & Named Fantasy Establishments
+    if (zoom >= 75) {
+      const hasEst = b.establishment !== undefined;
+      const isKeyCivic =
+        b.buildingType === "chapel" ||
         b.buildingType === "cathedral" ||
         b.buildingType === "temple" ||
         b.buildingType === "townhall" ||
@@ -383,34 +556,43 @@ export function drawSettlementCadastre(opts: CadastreRenderOptions): void {
         b.buildingType === "inn" ||
         b.buildingType === "tavern" ||
         b.buildingType === "manor" ||
-        b.buildingType === "watermill")
-    ) {
-      ctx.save();
-      const bx = toX(b.center[0]);
-      const by = toY(b.center[1]);
-      ctx.font = "italic bold 10px 'Baskerville', 'Georgia', serif";
-      ctx.fillStyle = "#0f172a";
-      ctx.textAlign = "center";
-      ctx.shadowColor = "rgba(255, 255, 255, 0.95)";
-      ctx.shadowBlur = 4;
-      const label =
-        b.buildingType === "cathedral"
-          ? "Great Cathedral"
-          : b.buildingType === "temple"
-          ? "Sanctuary"
-          : b.buildingType === "townhall"
-          ? "Town Hall"
-          : b.buildingType === "keep"
-          ? "Citadel Keep"
-          : b.buildingType === "inn"
-          ? "Coaching Inn"
-          : b.buildingType === "manor"
-          ? "Patrician Manor"
-          : b.buildingType === "watermill"
-          ? "Watermill"
-          : "Chapel";
-      ctx.fillText(label, bx, by - b.lengthM * metersToPx * 0.75);
-      ctx.restore();
+        b.buildingType === "watermill" ||
+        b.buildingType === "blacksmith";
+
+      if (hasEst || (zoom >= 180 && isKeyCivic)) {
+        ctx.save();
+        const bx = toX(b.center[0]);
+        const by = toY(b.center[1]);
+
+        ctx.font = zoom >= 140
+          ? "italic bold 10.5px 'Baskerville', 'Georgia', serif"
+          : "italic bold 8.5px 'Baskerville', 'Georgia', serif";
+        ctx.fillStyle = "#0f172a";
+        ctx.textAlign = "center";
+        ctx.shadowColor = "rgba(255, 255, 255, 0.95)";
+        ctx.shadowBlur = 4;
+
+        const mainLabel = b.establishment ? b.establishment.name : (
+          b.buildingType === "cathedral" ? "Great Cathedral" :
+          b.buildingType === "temple" ? "Sanctuary" :
+          b.buildingType === "townhall" ? "Town Hall" :
+          b.buildingType === "keep" ? "Citadel Keep" :
+          b.buildingType === "inn" ? "Coaching Inn" :
+          b.buildingType === "tavern" ? "Tavern" :
+          b.buildingType === "blacksmith" ? "Blacksmith Forge" :
+          b.buildingType === "manor" ? "Patrician Manor" :
+          b.buildingType === "watermill" ? "Watermill" : "Chapel"
+        );
+        ctx.fillText(mainLabel, bx, by - b.lengthM * metersToPx * 0.75);
+
+        // Secondary trade / proprietor subtitle at extreme zoom
+        if (zoom >= 180 && b.establishment) {
+          ctx.font = "normal 8px 'Inter', sans-serif";
+          ctx.fillStyle = "#475569";
+          ctx.fillText(b.establishment.proprietor, bx, by - b.lengthM * metersToPx * 0.75 + 10);
+        }
+        ctx.restore();
+      }
     }
   }
 }

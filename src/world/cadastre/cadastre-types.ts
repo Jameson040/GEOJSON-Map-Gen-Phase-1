@@ -87,7 +87,72 @@ export type ParcelUse =
   | "cattle_ranch"
   | "farm_field"
   | "temple_precinct"
-  | "inn_courtyard";
+  | "inn_courtyard"
+  | "quayside"
+  | "strip_croft";
+
+/** Settlement structural morphology archetype */
+export type SettlementMorphology =
+  | "walled_concentric"   // Fortified city/town with curtain walls, bastions, gates (Watabou-style)
+  | "linear_ribbon"       // Roadside hamlet/village with deep agricultural strip crofts (Runions-style)
+  | "waterfront_port"     // Quayside, wooden piers, storehouses conforming to water (Chen-style)
+  | "crossroads_market";  // Open market green at multi-road junction
+
+/** Socio-economic establishment identity (S. John Ross / Eigengrau model) */
+export interface EstablishmentInfo {
+  id: string;
+  name: string;
+  trade: string;
+  proprietor: string;
+  socialClass: "patrician" | "artisan" | "yeoman" | "laborer" | "clergy";
+  specialty?: string;
+  buildingId?: string;
+}
+
+/** Defensive curtain wall tower / bastion */
+export interface DefensiveTower {
+  id: string;
+  center: Pt;
+  radiusM: number;
+  heightM: number;
+  isGateTower?: boolean;
+}
+
+/** Defensive fortified portal / gatehouse where road pierces curtain wall */
+export interface DefensiveGatehouse {
+  id: string;
+  center: Pt;
+  roadAngleRad: number;
+  widthM: number;
+  depthM: number;
+  towers: DefensiveTower[];
+}
+
+/** Fortified defensive wall circuit (Watabou enceinte) */
+export interface DefensiveEnceinte {
+  curtainWalls: Pt[][];          // Polylines of curtain wall battlements
+  wallThicknessM: number;
+  towers: DefensiveTower[];
+  gates: DefensiveGatehouse[];
+  hasMoat?: boolean;
+}
+
+/** Wooden pier / jetty extending into water */
+export interface WaterfrontPier {
+  id: string;
+  start: Pt;
+  end: Pt;
+  widthM: number;
+  lengthM: number;
+}
+
+/** Waterfront quayside and harbor extensions */
+export interface WaterfrontFeature {
+  quayStreetId: string;
+  waterEdgePolyline: Pt[];
+  piers: WaterfrontPier[];
+  quaysideWidthM: number;
+}
 
 /** One facet (slope) of a roof, shaded by sun angle for satellite depth */
 export interface RoofFacet {
@@ -115,6 +180,7 @@ export interface BuildingFootprint {
   facets: RoofFacet[];            // Slopes with directional illumination
   chimneys: Pt[];                 // Positions of chimneys in world coordinates
   orientationRad: number;         // Angle of main axis in radians
+  establishment?: EstablishmentInfo; // Socio-economic identity
 }
 
 /** Street segment polyline */
@@ -146,6 +212,7 @@ export interface SettlementCadastre {
   settlementName: string;
   tier: SettlementTier;
   type: SettlementType;
+  morphology: SettlementMorphology;
   center: Pt;                     // Settlement hub in world coordinates
   radiusUnits: number;            // Radius in world coordinates
   radiusM: number;                // Radius in meters
@@ -155,6 +222,9 @@ export interface SettlementCadastre {
   civicWell?: { center: Pt; radiusM: number };
   civicPond?: { center: Pt; radiusM: number; polygon: Pt[] };
   marketSquare?: Pt[];
+  defense?: DefensiveEnceinte;
+  waterfront?: WaterfrontFeature;
+  establishments: EstablishmentInfo[];
   rawBuildingCount: number;       // Pre-finetune count for GAN metrics
   stats: CadastreStats;
   verificationBefore: VerificationReport;
@@ -175,9 +245,11 @@ export interface CadastreStats {
 }
 
 export interface CadastreConfig {
-  buildingDensity: number;        // 0.5 (sparse) .. 2.0 (dense)
-  roofPitchMultiplier: number;    // 0.7 (flatter) .. 1.4 (steeper)
+  buildingDensity?: number;       // 0.5 (sparse) .. 2.0 (dense)
+  roofPitchMultiplier?: number;   // 0.7 (flatter) .. 1.4 (steeper)
   customSeed?: string;
+  forceMorphology?: SettlementMorphology;
+  enableDefensiveWalls?: boolean;
 }
 
 /** Region-wide cadastral collection */

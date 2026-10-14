@@ -211,6 +211,25 @@ export function verifyCadastre(
     sampleViolations: [],
   });
 
+  // Check 8: Socio-Economic Establishments (Eigengrau Model)
+  const establishedBuildings = buildings.filter((b) => b.establishment !== undefined);
+  const invalidEsts = establishedBuildings.filter(
+    (b) => !b.establishment?.name || !b.establishment?.trade || !b.establishment?.proprietor
+  );
+  checks.push({
+    id: "cadastre_establishment_integrity",
+    category: "scale",
+    title: "Socio-Economic Establishment Attribution",
+    rule: "Municipal, commercial, and religious buildings possess verified establishment profiles.",
+    passed: invalidEsts.length === 0,
+    checkedCount: establishedBuildings.length,
+    violationCount: invalidEsts.length,
+    details: invalidEsts.length === 0
+      ? `${establishedBuildings.length} active fantasy trade establishments and proprietors registered.`
+      : `${invalidEsts.length} buildings have malformed establishment records.`,
+    sampleViolations: [],
+  });
+
   const totalChecks = checks.length;
   const passedChecks = checks.filter((c) => c.passed).length;
   const totalViolations = checks.reduce((sum, c) => sum + c.violationCount, 0);

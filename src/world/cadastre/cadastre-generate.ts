@@ -5,12 +5,19 @@ import type {
   BuildingFootprint,
   BuildingFunction,
   CadastreConfig,
+  DefensiveEnceinte,
+  DefensiveGatehouse,
+  DefensiveTower,
+  EstablishmentInfo,
   Parcel,
   RoofFacet,
   RoofMaterial,
   RoofType,
   SettlementCadastre,
+  SettlementMorphology,
   StreetSegment,
+  WaterfrontFeature,
+  WaterfrontPier,
 } from "./cadastre-types";
 import { metersToUnits } from "./cadastre-types";
 import {
@@ -22,6 +29,8 @@ import {
 import { makeRng, range } from "../rng";
 import { runCadastreFinetune } from "./cadastre-finetune";
 import { verifyCadastre } from "./cadastre-verifier";
+import { generateSettlementEstablishments } from "./cadastre-establishments";
+import { dist } from "../geom";
 
 // Compute sun exposure for a 2D slope vector perpendicular to ridge
 // Sun is at azimuth 315° (from NW, vector [-0.707, -0.707])
@@ -47,7 +56,6 @@ export function computeSunExposure(slopeDirectionAngle: number, pitchDeg: number
 /** Helper: Generate parallel furrow lines across a farm field parcel */
 export function generateCropFurrows(boundary: Pt[], spacingM = 4.5): [Pt, Pt][] {
   if (boundary.length < 3) return [];
-  // Find bounding box
   let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
   for (const [x, y] of boundary) {
     if (x < minX) minX = x;
@@ -60,7 +68,6 @@ export function generateCropFurrows(boundary: Pt[], spacingM = 4.5): [Pt, Pt][] 
   const widthUnits = maxX - minX;
   const heightUnits = maxY - minY;
 
-  // Run furrows along the longer axis
   if (widthUnits >= heightUnits) {
     const steps = Math.floor(heightUnits / spacingUnits);
     for (let i = 1; i < steps; i++) {
@@ -80,10 +87,8 @@ export function generateCropFurrows(boundary: Pt[], spacingM = 4.5): [Pt, Pt][] 
 /** Helper: Generate post-and-rail wooden fences or stone estate walls */
 export function generateEnclosureFences(boundary: Pt[], _gateOpeningM = 5.0): Pt[][] {
   if (boundary.length < 3) return [];
-  // Return boundary perimeter edges with an opening on the street-facing side
   const segments: Pt[][] = [];
   const n = boundary.length;
-  // Leave segment 0-1 open for the gate
   for (let i = 1; i < n; i++) {
     const nextIdx = (i + 1) % n;
     segments.push([boundary[i], boundary[nextIdx]]);
@@ -91,19 +96,80 @@ export function generateEnclosureFences(boundary: Pt[], _gateOpeningM = 5.0): Pt
   return segments;
 }
 
+/** Detects proximity to natural water bodies (rivers, lakes, sea) */
+export function detectNearbyWaterBody(
+  geo: GeneratedRegion,
+  center: Pt,
+  searchRadiusUnits = 0.055 // ~300 meters
+): { hasWater: boolean; tangentAngle: number; waterEdge: Pt } {
+  for (const f of geo.features) {
+    const fType = f.properties.featureType;
+    if (fType === "river") {
+      const coords = f.geometry.coordinates as unknown as Pt[];
+      if (Array.isArray(coords)) {
+        for (let i = 0; i < coords.length - 1; i++) {
+          const d = dist(center, coords[i]);
+          if (d <= searchRadiusUnits) {
+            const dx = coords[i + 1][0] - coords[i][0];
+            const dy = coords[i + 1][1] - coords[i][1];
+            return { hasWater: true, tangentAngle: Math.atan2(dy, dx), waterEdge: coords[i] };
+          }
+        }
+      }
+    } else if (fType === "lake" || fType === "sea") {
+      const rings = f.geometry.coordinates as unknown as Pt[][][];
+      if (Array.isArray(rings) && rings[0]) {
+        const ring = rings[0] as unknown as Pt[];
+        for (let i = 0; i < ring.length - 1; i++) {
+          const d = dist(center, ring[i]);
+          if (d <= searchRadiusUnits) {
+            const dx = ring[i + 1][0] - ring[i][0];
+            const dy = ring[i + 1][1] - ring[i][1];
+            return { hasWater: true, tangentAngle: Math.atan2(dy, dx), waterEdge: ring[i] };
+          }
+        }
+      }
+    }
+  }
+  return { hasWater: false, tangentAngle: 0, waterEdge: center };
+}
+
+/** Resolves settlement morphology based on tier, type, geography, or explicit config */
+export function resolveSettlementMorphology(
+  geo: GeneratedRegion,
+  settlement: Settlement,
+  config?: CadastreConfig
+): SettlementMorphology {
+  if (config?.forceMorphology) {
+    return config.forceMorphology;
+  }
+  const water = detectNearbyWaterBody(geo, settlement.point);
+  if (water.hasWater) {
+    return "waterfront_port";
+  }
+  if (
+    settlement.tier === "town" ||
+    settlement.tier === "city" ||
+    settlement.tier === "metropolis" ||
+    settlement.type === "fortress_city"
+  ) {
+    return "walled_concentric";
+  }
+  if (settlement.tier === "hamlet" || settlement.tier === "nomadic") {
+    return "linear_ribbon";
+  }
+  return "crossroads_market";
+}
+
 /**
- * GENERATE STAGE — City / Village Micro-Urbanism Synthesizer
+ * UNIVERSAL SETTLEMENT GENERATOR
  *
- * Generates an unconstrained, highly structured settlement layout:
- *   1. Central Market Plaza with Public Town Well, Historic Inn, and Temple.
- *   2. Radial-concentric street network with market stalls and public lanes.
- *   3. Patrician Quarter with Gentry Mansions, private walled gardens & lawns.
- *   4. Artisan & Merchant Quarter along radial thoroughfares.
- *   5. Poor Quarter with crowded hovels and cottages along crooked alleys.
- *   6. Outer Agricultural Greenbelt:
- *      - Crop fields with parallel furrow striations.
- *      - Cattle ranches with wooden post-and-rail fences & livestock sheds.
- *      - Windmill on outer knolls / Watermill on millrace/stream.
+ * Adapts open-source paradigms:
+ *   1. Walled Concentric (Watabou): Defensive curtain walls, bastions, gates, inner wards.
+ *   2. Linear Ribbon (Runions): Roadside ribbon settlement with deep agricultural strip crofts.
+ *   3. Waterfront Port (Chen): Paved quayside street, wooden piers/jetties, fishmongers, warehouses.
+ *   4. Crossroads Market: Open market green, coaching inn, smithy, livestock corrals.
+ *   5. Socio-Economic Establishments (Eigengrau / Ross): Resource-driven named shops, inns, temples.
  */
 export function generateCadastre(
   geo: GeneratedRegion,
@@ -119,7 +185,6 @@ export function generateCadastre(
   const density = config?.buildingDensity ?? 1.0;
   const pitchMult = config?.roofPitchMultiplier ?? 1.0;
 
-  // Scale radius based on tier and optional population scale
   let radiusM = profile.radiusM * Math.sqrt(density);
   if (population && population.occupancy > 0) {
     const scaleFactor = Math.min(1.35, Math.max(0.75, Math.pow(population.occupancy / Math.max(10, settlement.popCap), 0.3)));
@@ -141,576 +206,28 @@ export function generateCadastre(
     }
   }
 
+  const morphology = resolveSettlementMorphology(geo, settlement, config);
+
   const streets: StreetSegment[] = [];
   const parcels: Parcel[] = [];
   const rawBuildings: BuildingFootprint[] = [];
   let buildingIdCounter = 0;
 
-  const primaryAngle = rng() * Math.PI * 2; // Main axis angle
+  const primaryAngle = rng() * Math.PI * 2;
 
-  // ---------------------------------------------------------------------------
-  // 1. Central Market Plaza & Civic Heart
-  // ---------------------------------------------------------------------------
-  const plazaSizeMap: Record<string, [number, number]> = {
-    nomadic: [20, 16],
-    hamlet: [26, 20],
-    village: [42, 32],
-    town: [64, 48],
-    city: [84, 64],
-    metropolis: [110, 80],
-  };
-  const [plazaLenM, plazaWidM] = plazaSizeMap[settlement.tier] ?? [40, 30];
-  const halfPlazaLenUnits = metersToUnits(plazaLenM / 2);
-  const halfPlazaWidUnits = metersToUnits(plazaWidM / 2);
+  let defense: DefensiveEnceinte | undefined;
+  let waterfront: WaterfrontFeature | undefined;
+  let marketSquare: Pt[] | undefined;
 
-  // Four corners of the Market Plaza
-  const plazaCornersLocal: Pt[] = [
-    [-halfPlazaLenUnits, -halfPlazaWidUnits],
-    [halfPlazaLenUnits, -halfPlazaWidUnits],
-    [halfPlazaLenUnits, halfPlazaWidUnits],
-    [-halfPlazaLenUnits, halfPlazaWidUnits],
-  ];
-  const marketSquare: Pt[] = plazaCornersLocal.map(([lx, ly]) => {
-    const rx = lx * Math.cos(primaryAngle) - ly * Math.sin(primaryAngle);
-    const ry = lx * Math.sin(primaryAngle) + ly * Math.cos(primaryAngle);
-    return [center[0] + rx, center[1] + ry];
-  });
-
-  // Register Market Plaza parcel
-  parcels.push({
-    id: `pcl_${settlement.id}_plaza`,
-    boundary: marketSquare,
-    landUse: "plaza",
-    areaM2: plazaLenM * plazaWidM,
-    buildingIds: [],
-    fillColor: "rgba(180, 165, 140, 0.22)",
-  });
-
-  // Plaza perimeter carriageway
-  const plazaRingStreet: StreetSegment = {
-    id: `str_${settlement.id}_plaza_ring`,
-    kind: "plaza",
-    surface: profile.streetSurface,
-    widthM: profile.primaryStreetWidthM,
-    points: [...marketSquare, marketSquare[0]],
-  };
-  streets.push(plazaRingStreet);
-
-  // 1A. THE TOWN WELL (Center of the Market Plaza)
   const civicWell = {
     center,
     radiusM: 2.2,
   };
-  const wellRoofMat = resolveRoofMaterial(biomeType, settlement.tier, "well");
-  const wellBuilding = createBuildingFootprint(
-    `bld_${settlement.id}_well`,
-    "well",
-    center,
-    4.0,
-    4.0,
-    2.5,
-    1,
-    "thatched_round",
-    wellRoofMat,
-    primaryAngle,
-    26
-  );
-  rawBuildings.push(wellBuilding);
 
-  // 1B. THE INN (South edge of Plaza, facing inward)
-  const innOffsetM = plazaWidM / 2 + 10;
-  const innPerpAngle = primaryAngle + Math.PI / 2;
-  const innCenter: Pt = [
-    center[0] + metersToUnits(innOffsetM * Math.cos(innPerpAngle)),
-    center[1] + metersToUnits(innOffsetM * Math.sin(innPerpAngle)),
-  ];
-  const innDim = BUILDING_DIMENSIONS.inn;
-  const innLen = range(rng, innDim.lengthRangeM[0], innDim.lengthRangeM[1]);
-  const innWid = range(rng, innDim.widthRangeM[0], innDim.widthRangeM[1]);
-  const innBuilding = createBuildingFootprint(
-    `bld_${settlement.id}_inn`,
-    "inn",
-    innCenter,
-    innLen,
-    innWid,
-    range(rng, innDim.heightRangeM[0], innDim.heightRangeM[1]),
-    innDim.stories,
-    innDim.roofType,
-    resolveRoofMaterial(biomeType, settlement.tier, "inn"),
-    primaryAngle,
-    innDim.defaultPitchDeg * pitchMult
-  );
-  rawBuildings.push(innBuilding);
-
-  // Inn courtyard parcel
-  parcels.push({
-    id: `pcl_${settlement.id}_inn_yard`,
-    boundary: createParcelPolygon(innCenter, innLen + 8, innWid + 12, primaryAngle),
-    landUse: "inn_courtyard",
-    areaM2: (innLen + 8) * (innWid + 12),
-    buildingIds: [innBuilding.id],
-    fillColor: "rgba(160, 140, 120, 0.16)",
-  });
-
-  // 1C. THE TEMPLE / SANCTUARY (North edge of Plaza)
-  const templeFunc: BuildingFunction =
-    settlement.tier === "metropolis" || settlement.tier === "city"
-      ? "cathedral"
-      : settlement.tier === "hamlet" || settlement.tier === "nomadic"
-      ? "chapel"
-      : "temple";
-  const templeDim = BUILDING_DIMENSIONS[templeFunc];
-  const templeOffsetM = -(plazaWidM / 2 + 12);
-  const templeCenter: Pt = [
-    center[0] + metersToUnits(templeOffsetM * Math.cos(innPerpAngle)),
-    center[1] + metersToUnits(templeOffsetM * Math.sin(innPerpAngle)),
-  ];
-  const templeLen = range(rng, templeDim.lengthRangeM[0], templeDim.lengthRangeM[1]);
-  const templeWid = range(rng, templeDim.widthRangeM[0], templeDim.widthRangeM[1]);
-  const templeBuilding = createBuildingFootprint(
-    `bld_${settlement.id}_temple`,
-    templeFunc,
-    templeCenter,
-    templeLen,
-    templeWid,
-    range(rng, templeDim.heightRangeM[0], templeDim.heightRangeM[1]),
-    templeDim.stories,
-    templeDim.roofType,
-    resolveRoofMaterial(biomeType, settlement.tier, templeFunc),
-    primaryAngle + (Math.PI / 2), // East-West traditional altar alignment
-    templeDim.defaultPitchDeg * pitchMult
-  );
-  rawBuildings.push(templeBuilding);
-
-  // Temple precinct parcel
-  parcels.push({
-    id: `pcl_${settlement.id}_temple_precinct`,
-    boundary: createParcelPolygon(templeCenter, templeLen + 10, templeWid + 12, primaryAngle + Math.PI / 2),
-    landUse: "temple_precinct",
-    areaM2: (templeLen + 10) * (templeWid + 12),
-    buildingIds: [templeBuilding.id],
-    fillColor: "rgba(130, 145, 130, 0.18)",
-  });
-
-  // 1D. TOWNHALL OR KEEP (West edge for town/city)
-  if (settlement.tier === "town" || settlement.tier === "city" || settlement.tier === "metropolis") {
-    const civicFunc: BuildingFunction = settlement.tier === "town" ? "townhall" : settlement.type === "fortress_city" ? "keep" : "townhall";
-    const cDim = BUILDING_DIMENSIONS[civicFunc];
-    const civicOffsetM = -(plazaLenM / 2 + 14);
-    const civicCenter: Pt = [
-      center[0] + metersToUnits(civicOffsetM * Math.cos(primaryAngle)),
-      center[1] + metersToUnits(civicOffsetM * Math.sin(primaryAngle)),
-    ];
-    const cLen = range(rng, cDim.lengthRangeM[0], cDim.lengthRangeM[1]);
-    const cWid = range(rng, cDim.widthRangeM[0], cDim.widthRangeM[1]);
-    const civicBuilding = createBuildingFootprint(
-      `bld_${settlement.id}_civic`,
-      civicFunc,
-      civicCenter,
-      cLen,
-      cWid,
-      range(rng, cDim.heightRangeM[0], cDim.heightRangeM[1]),
-      cDim.stories,
-      cDim.roofType,
-      resolveRoofMaterial(biomeType, settlement.tier, civicFunc),
-      primaryAngle,
-      cDim.defaultPitchDeg * pitchMult
-    );
-    rawBuildings.push(civicBuilding);
-  }
-
-  // 1E. MARKET STALLS (Ringing the Plaza perimeter)
-  const stallCount = settlement.tier === "hamlet" ? 4 : settlement.tier === "village" ? 8 : 14;
-  for (let i = 0; i < stallCount; i++) {
-    const t = (i + 0.5) / stallCount;
-    const stallAngle = primaryAngle + t * Math.PI * 2;
-    // Set 6m back from plaza boundary
-    const stallDistM = Math.min(plazaLenM, plazaWidM) * 0.42;
-    const sPos: Pt = [
-      center[0] + metersToUnits(stallDistM * Math.cos(stallAngle)),
-      center[1] + metersToUnits(stallDistM * Math.sin(stallAngle)),
-    ];
-    const stallDim = BUILDING_DIMENSIONS.market_stall;
-    const stallBld = createBuildingFootprint(
-      `bld_${settlement.id}_stall_${i}`,
-      "market_stall",
-      sPos,
-      range(rng, stallDim.lengthRangeM[0], stallDim.lengthRangeM[1]),
-      range(rng, stallDim.widthRangeM[0], stallDim.widthRangeM[1]),
-      2.8,
-      1,
-      "gable",
-      i % 2 === 0 ? "terracotta" : "thatch",
-      stallAngle + Math.PI / 2,
-      25
-    );
-    rawBuildings.push(stallBld);
-  }
-
-  // ---------------------------------------------------------------------------
-  // 2. Radial-Concentric Street Network
-  // ---------------------------------------------------------------------------
-  const radialCount = settlement.tier === "nomadic" ? 3 : settlement.tier === "hamlet" ? 4 : settlement.tier === "village" ? 5 : 6;
-  const radialAngles: number[] = [];
-  const radialOuterPoints: Pt[] = [];
-
-  for (let r = 0; r < radialCount; r++) {
-    const rAngle = primaryAngle + (r / radialCount) * Math.PI * 2 + (rng() - 0.5) * 0.15;
-    radialAngles.push(rAngle);
-
-    const roadLengthM = radiusM * 1.15;
-    const steps = Math.max(4, Math.floor(roadLengthM / 35));
-    const pts: Pt[] = [];
-
-    // Start at edge of plaza
-    const startM = Math.min(plazaLenM, plazaWidM) / 2;
-    for (let s = 0; s <= steps; s++) {
-      const dM = startM + ((roadLengthM - startM) * s) / steps;
-      const wiggleM = s === 0 ? 0 : (rng() - 0.5) * 10;
-      const pxM = dM * Math.cos(rAngle) - wiggleM * Math.sin(rAngle);
-      const pyM = dM * Math.sin(rAngle) + wiggleM * Math.cos(rAngle);
-      pts.push([center[0] + metersToUnits(pxM), center[1] + metersToUnits(pyM)]);
-    }
-
-    radialOuterPoints.push(pts[pts.length - 1]);
-    streets.push({
-      id: `str_${settlement.id}_radial_${r}`,
-      kind: "arterial",
-      surface: profile.streetSurface,
-      widthM: profile.primaryStreetWidthM,
-      points: pts,
-    });
-  }
-
-  // Ring bypass road connecting the radials at mid-radius (~50% radius)
-  if (settlement.tier !== "nomadic") {
-    const ringDistM = radiusM * 0.52;
-    const ringPts: Pt[] = [];
-    const ringSteps = radialCount * 3;
-    for (let i = 0; i <= ringSteps; i++) {
-      const a = primaryAngle + (i / ringSteps) * Math.PI * 2;
-      const wM = (rng() - 0.5) * 8;
-      const rxM = (ringDistM + wM) * Math.cos(a);
-      const ryM = (ringDistM + wM) * Math.sin(a);
-      ringPts.push([center[0] + metersToUnits(rxM), center[1] + metersToUnits(ryM)]);
-    }
-    streets.push({
-      id: `str_${settlement.id}_ring_mid`,
-      kind: "spine",
-      surface: profile.streetSurface === "paved_stone" ? "cobblestone" : "gravel",
-      widthM: profile.secondaryStreetWidthM,
-      points: ringPts,
-    });
-  }
-
-  // ---------------------------------------------------------------------------
-  // 3. District Zoning & Structural Parcels
-  // ---------------------------------------------------------------------------
-
-  // 3A. PATRICIAN QUARTER (Rich Mansions with Private Estate Gardens)
-  // Located in windward quadrant (NW), away from industrial smoke & cattle
-  const manorCount = settlement.tier === "metropolis" ? 12 : settlement.tier === "city" ? 6 : settlement.tier === "town" ? 3 : 1;
-  const manorStartAngle = primaryAngle + 0.5;
-  for (let m = 0; m < manorCount; m++) {
-    const mAngle = manorStartAngle + (m * 0.45) + (rng() - 0.5) * 0.1;
-    const mDistM = range(rng, radiusM * 0.28, radiusM * 0.58);
-    const mCenter: Pt = [
-      center[0] + metersToUnits(mDistM * Math.cos(mAngle)),
-      center[1] + metersToUnits(mDistM * Math.sin(mAngle)),
-    ];
-
-    const mDim = BUILDING_DIMENSIONS.manor;
-    const mLen = range(rng, mDim.lengthRangeM[0], mDim.lengthRangeM[1]);
-    const mWid = range(rng, mDim.widthRangeM[0], mDim.widthRangeM[1]);
-    const manorBld = createBuildingFootprint(
-      `bld_${settlement.id}_manor_${++buildingIdCounter}`,
-      "manor",
-      mCenter,
-      mLen,
-      mWid,
-      range(rng, mDim.heightRangeM[0], mDim.heightRangeM[1]),
-      mDim.stories,
-      "hip",
-      resolveRoofMaterial(biomeType, settlement.tier, "manor"),
-      mAngle,
-      mDim.defaultPitchDeg * pitchMult
-    );
-    rawBuildings.push(manorBld);
-
-    // Spacious estate parcel with private stone walls
-    const estateW = mWid + 24;
-    const estateL = mLen + 28;
-    const estatePoly = createParcelPolygon(mCenter, estateW, estateL, mAngle);
-    parcels.push({
-      id: `pcl_${settlement.id}_manor_${m}`,
-      boundary: estatePoly,
-      landUse: "mansion_estate",
-      areaM2: estateW * estateL,
-      buildingIds: [manorBld.id],
-      fences: generateEnclosureFences(estatePoly, 6.0),
-      fillColor: "rgba(100, 155, 90, 0.22)", // Rich manicured green lawn
-    });
-  }
-
-  // 3B. COMMON ARTISAN & MERCHANT QUARTER
-  // Regular burgage lots facing radial avenues and ring street
-  const artisanCount = settlement.tier === "nomadic" ? 3 : settlement.tier === "hamlet" ? 8 : settlement.tier === "village" ? 18 : 45;
-  for (let a = 0; a < artisanCount; a++) {
-    const radIdx = a % radialCount;
-    const baseAngle = radialAngles[radIdx];
-    const side = (a % 2 === 0 ? 1 : -1);
-    let dM = range(rng, radiusM * 0.22, radiusM * 0.65);
-    const ringDistM = radiusM * 0.52;
-    if (Math.abs(dM - ringDistM) < 18) {
-      dM = dM < ringDistM ? ringDistM - 20 : ringDistM + 20;
-    }
-    const perpA = baseAngle + side * (Math.PI / 2);
-    const setbackM = (profile.primaryStreetWidthM / 2) + 12;
-    const artCenter: Pt = [
-      center[0] + metersToUnits(dM * Math.cos(baseAngle) + setbackM * Math.cos(perpA)),
-      center[1] + metersToUnits(dM * Math.sin(baseAngle) + setbackM * Math.sin(perpA)),
-    ];
-
-    const isSmith = a % 7 === 0;
-    const isStore = a % 5 === 0;
-    const func: BuildingFunction = isSmith ? "blacksmith" : isStore ? "storehouse" : "cottage";
-    const dim = BUILDING_DIMENSIONS[func];
-    const bLen = range(rng, dim.lengthRangeM[0], dim.lengthRangeM[1]);
-    const bWid = range(rng, dim.widthRangeM[0], dim.widthRangeM[1]);
-    const bld = createBuildingFootprint(
-      `bld_${settlement.id}_artisan_${++buildingIdCounter}`,
-      func,
-      artCenter,
-      bLen,
-      bWid,
-      range(rng, dim.heightRangeM[0], dim.heightRangeM[1]),
-      dim.stories,
-      dim.roofType,
-      resolveRoofMaterial(biomeType, settlement.tier, func),
-      baseAngle,
-      dim.defaultPitchDeg * pitchMult
-    );
-    rawBuildings.push(bld);
-
-    const pLot = createParcelPolygon(artCenter, bWid + 6, bLen + 10, baseAngle);
-    parcels.push({
-      id: `pcl_${settlement.id}_artisan_${a}`,
-      boundary: pLot,
-      landUse: isSmith ? "artisan" : "residential",
-      areaM2: (bWid + 6) * (bLen + 10),
-      buildingIds: [bld.id],
-    });
-  }
-
-  // 3C. THE POOR QUARTER / TENEMENTS
-  // Tightly clustered peasant hovels & cottages in SE downwind quadrant
-  const poorQuarterCount = settlement.tier === "nomadic" ? 4 : settlement.tier === "hamlet" ? 6 : settlement.tier === "village" ? 16 : 40;
-  const poorStartAngle = primaryAngle + Math.PI + 0.3;
-  for (let p = 0; p < poorQuarterCount; p++) {
-    const pAngle = poorStartAngle + (p / poorQuarterCount) * 1.3 + (rng() - 0.5) * 0.2;
-    const pDistM = range(rng, radiusM * 0.32, radiusM * 0.68);
-    const pCenter: Pt = [
-      center[0] + metersToUnits(pDistM * Math.cos(pAngle)),
-      center[1] + metersToUnits(pDistM * Math.sin(pAngle)),
-    ];
-
-    const hovelFunc: BuildingFunction = p % 2 === 0 ? "hovel" : "cottage";
-    const hDim = BUILDING_DIMENSIONS[hovelFunc];
-    const hLen = range(rng, hDim.lengthRangeM[0], hDim.lengthRangeM[1]);
-    const hWid = range(rng, hDim.widthRangeM[0], hDim.widthRangeM[1]);
-    const hBld = createBuildingFootprint(
-      `bld_${settlement.id}_poor_${++buildingIdCounter}`,
-      hovelFunc,
-      pCenter,
-      hLen,
-      hWid,
-      range(rng, hDim.heightRangeM[0], hDim.heightRangeM[1]),
-      1,
-      "gable",
-      "thatch",
-      pAngle + (rng() - 0.5) * 0.4,
-      hDim.defaultPitchDeg * pitchMult
-    );
-    rawBuildings.push(hBld);
-
-    const hPoly = createParcelPolygon(pCenter, hWid + 3, hLen + 4, pAngle);
-    parcels.push({
-      id: `pcl_${settlement.id}_poor_${p}`,
-      boundary: hPoly,
-      landUse: "poor_quarter",
-      areaM2: (hWid + 3) * (hLen + 4),
-      buildingIds: [hBld.id],
-      fillColor: "rgba(145, 130, 110, 0.14)",
-    });
-  }
-
-  // 3D. RURAL AGRICULTURAL GREENBELT (Outer Ring: Farms & Cattle Ranches)
-  // Outer perimeter from 0.55 * radiusM out to 1.05 * radiusM
-
-  // Farms (Crop Fields with Parallel Furrow Striations)
-  const farmCount = settlement.tier === "nomadic" ? 2 : settlement.tier === "hamlet" ? 4 : settlement.tier === "village" ? 8 : 16;
-  const cropTypes: ("wheat" | "barley" | "vegetables" | "pasture" | "fallow")[] = [
-    "wheat",
-    "barley",
-    "vegetables",
-    "pasture",
-    "fallow",
-  ];
-
-  for (let f = 0; f < farmCount; f++) {
-    const fAngle = primaryAngle + ((f + 0.5) / farmCount) * Math.PI * 2 + (rng() - 0.5) * 0.15;
-    const fDistM = range(rng, radiusM * 0.62, radiusM * 0.98);
-    const fCenter: Pt = [
-      center[0] + metersToUnits(fDistM * Math.cos(fAngle)),
-      center[1] + metersToUnits(fDistM * Math.sin(fAngle)),
-    ];
-
-    const fieldW = range(rng, 42, 68);
-    const fieldL = range(rng, 55, 88);
-    const fieldPoly = createParcelPolygon(fCenter, fieldW, fieldL, fAngle);
-    const cType = cropTypes[f % cropTypes.length];
-
-    // Build farmhouse & timber barn on the farmstead edge
-    const farmBlds: string[] = [];
-    const fhDim = BUILDING_DIMENSIONS.farmhouse;
-    const fhPos: Pt = [
-      fCenter[0] - metersToUnits(fieldL * 0.32 * Math.cos(fAngle)),
-      fCenter[1] - metersToUnits(fieldL * 0.32 * Math.sin(fAngle)),
-    ];
-    const fhBld = createBuildingFootprint(
-      `bld_${settlement.id}_farmhouse_${++buildingIdCounter}`,
-      "farmhouse",
-      fhPos,
-      range(rng, fhDim.lengthRangeM[0], fhDim.lengthRangeM[1]),
-      range(rng, fhDim.widthRangeM[0], fhDim.widthRangeM[1]),
-      range(rng, fhDim.heightRangeM[0], fhDim.heightRangeM[1]),
-      2,
-      "gable",
-      resolveRoofMaterial(biomeType, settlement.tier, "farmhouse"),
-      fAngle,
-      fhDim.defaultPitchDeg * pitchMult
-    );
-    rawBuildings.push(fhBld);
-    farmBlds.push(fhBld.id);
-
-    // Barn
-    const bDim = BUILDING_DIMENSIONS.barn;
-    const bPos: Pt = [
-      fhPos[0] + metersToUnits(16 * Math.sin(fAngle)),
-      fhPos[1] - metersToUnits(16 * Math.cos(fAngle)),
-    ];
-    const barnBld = createBuildingFootprint(
-      `bld_${settlement.id}_barn_${++buildingIdCounter}`,
-      "barn",
-      bPos,
-      range(rng, bDim.lengthRangeM[0], bDim.lengthRangeM[1]),
-      range(rng, bDim.widthRangeM[0], bDim.widthRangeM[1]),
-      range(rng, bDim.heightRangeM[0], bDim.heightRangeM[1]),
-      1,
-      "gable",
-      "timber",
-      fAngle,
-      bDim.defaultPitchDeg * pitchMult
-    );
-    rawBuildings.push(barnBld);
-    farmBlds.push(barnBld.id);
-
-    parcels.push({
-      id: `pcl_${settlement.id}_farm_${f}`,
-      boundary: fieldPoly,
-      landUse: "farm_field",
-      areaM2: fieldW * fieldL,
-      buildingIds: farmBlds,
-      cropType: cType,
-      furrows: generateCropFurrows(fieldPoly, 4.5),
-      fences: generateEnclosureFences(fieldPoly, 7.0),
-      fillColor:
-        cType === "wheat"
-          ? "rgba(225, 195, 115, 0.28)" // Warm golden wheat
-          : cType === "barley"
-          ? "rgba(210, 180, 105, 0.26)" // Straw yellow barley
-          : cType === "vegetables"
-          ? "rgba(135, 165, 85, 0.25)" // Lush green cabbage/veggie rows
-          : "rgba(150, 130, 105, 0.22)", // Ploughed brown fallow
-    });
-  }
-
-  // Cattle Ranches / Grazing Paddocks (Wooden Fences & Livestock Sheds)
-  const ranchCount = settlement.tier === "nomadic" ? 1 : settlement.tier === "hamlet" ? 2 : settlement.tier === "village" ? 4 : 8;
-  for (let c = 0; c < ranchCount; c++) {
-    const cAngle = primaryAngle + ((c + 0.25) / ranchCount) * Math.PI * 2 + (rng() - 0.5) * 0.15;
-    const cDistM = range(rng, radiusM * 0.65, radiusM * 0.95);
-    const rCenter: Pt = [
-      center[0] + metersToUnits(cDistM * Math.cos(cAngle)),
-      center[1] + metersToUnits(cDistM * Math.sin(cAngle)),
-    ];
-
-    const ranchW = range(rng, 50, 78);
-    const ranchL = range(rng, 60, 95);
-    const ranchPoly = createParcelPolygon(rCenter, ranchW, ranchL, cAngle);
-
-    // Cattle shed inside the paddock
-    const csDim = BUILDING_DIMENSIONS.cattle_shed;
-    const csCenter: Pt = [
-      rCenter[0] + metersToUnits(ranchW * 0.28 * Math.cos(cAngle + Math.PI / 2)),
-      rCenter[1] + metersToUnits(ranchW * 0.28 * Math.sin(cAngle + Math.PI / 2)),
-    ];
-    const csBld = createBuildingFootprint(
-      `bld_${settlement.id}_cattle_shed_${++buildingIdCounter}`,
-      "cattle_shed",
-      csCenter,
-      range(rng, csDim.lengthRangeM[0], csDim.lengthRangeM[1]),
-      range(rng, csDim.widthRangeM[0], csDim.widthRangeM[1]),
-      range(rng, csDim.heightRangeM[0], csDim.heightRangeM[1]),
-      1,
-      "gable",
-      "timber",
-      cAngle,
-      csDim.defaultPitchDeg * pitchMult
-    );
-    rawBuildings.push(csBld);
-
-    parcels.push({
-      id: `pcl_${settlement.id}_ranch_${c}`,
-      boundary: ranchPoly,
-      landUse: "cattle_ranch",
-      areaM2: ranchW * ranchL,
-      buildingIds: [csBld.id],
-      fences: generateEnclosureFences(ranchPoly, 8.0),
-      fillColor: "rgba(120, 180, 95, 0.30)", // Fresh pasture green grass
-    });
-  }
-
-  // 3E. WINDMILL & VILLAGE POND
-  // Windmill on elevated outer perimeter
-  if (settlement.tier !== "nomadic") {
-    const wmAngle = primaryAngle + 2.2;
-    const wmDistM = radiusM * 0.88;
-    const wmCenter: Pt = [
-      center[0] + metersToUnits(wmDistM * Math.cos(wmAngle)),
-      center[1] + metersToUnits(wmDistM * Math.sin(wmAngle)),
-    ];
-    const wmDim = BUILDING_DIMENSIONS.windmill;
-    const wmBld = createBuildingFootprint(
-      `bld_${settlement.id}_windmill`,
-      "windmill",
-      wmCenter,
-      range(rng, wmDim.lengthRangeM[0], wmDim.lengthRangeM[1]),
-      range(rng, wmDim.widthRangeM[0], wmDim.widthRangeM[1]),
-      range(rng, wmDim.heightRangeM[0], wmDim.heightRangeM[1]),
-      3,
-      "tower_conical",
-      "cedar_shingle",
-      wmAngle,
-      wmDim.defaultPitchDeg * pitchMult
-    );
-    rawBuildings.push(wmBld);
-  }
-
-  // Village Pond / Millpond (In common grazing meadow or near water)
+  // Village pond
   const pondAngle = primaryAngle - 1.2;
   const pondDistM = radiusM * 0.45;
-  const pondRadiusM = range(rng, 14, 24);
+  const pondRadiusM = range(rng, 14, 22);
   const pondCenter: Pt = [
     center[0] + metersToUnits(pondDistM * Math.cos(pondAngle)),
     center[1] + metersToUnits(pondDistM * Math.sin(pondAngle)),
@@ -731,30 +248,882 @@ export function generateCadastre(
     polygon: pondPoly,
   };
 
-  // Watermill adjacent to pond
+  // =========================================================================
+  // ARCHETYPE 1: WALLED CONCENTRIC (Watabou Enceinte & Radial Wards)
+  // =========================================================================
+  if (morphology === "walled_concentric") {
+    const plazaLenM = settlement.tier === "metropolis" ? 100 : settlement.tier === "city" ? 80 : 60;
+    const plazaWidM = settlement.tier === "metropolis" ? 75 : settlement.tier === "city" ? 60 : 45;
+    const halfPlazaLenUnits = metersToUnits(plazaLenM / 2);
+    const halfPlazaWidUnits = metersToUnits(plazaWidM / 2);
+
+    const plazaCornersLocal: Pt[] = [
+      [-halfPlazaLenUnits, -halfPlazaWidUnits],
+      [halfPlazaLenUnits, -halfPlazaWidUnits],
+      [halfPlazaLenUnits, halfPlazaWidUnits],
+      [-halfPlazaLenUnits, halfPlazaWidUnits],
+    ];
+    marketSquare = plazaCornersLocal.map(([lx, ly]) => {
+      const rx = lx * Math.cos(primaryAngle) - ly * Math.sin(primaryAngle);
+      const ry = lx * Math.sin(primaryAngle) + ly * Math.cos(primaryAngle);
+      return [center[0] + rx, center[1] + ry];
+    });
+
+    parcels.push({
+      id: `pcl_${settlement.id}_plaza`,
+      boundary: marketSquare,
+      landUse: "plaza",
+      areaM2: plazaLenM * plazaWidM,
+      buildingIds: [],
+      fillColor: "rgba(180, 165, 140, 0.22)",
+    });
+
+    streets.push({
+      id: `str_${settlement.id}_plaza_ring`,
+      kind: "plaza",
+      surface: profile.streetSurface,
+      widthM: profile.primaryStreetWidthM,
+      points: [...marketSquare, marketSquare[0]],
+    });
+
+    // Town Well at plaza center
+    const wellBuilding = createBuildingFootprint(
+      `bld_${settlement.id}_well`,
+      "well",
+      center,
+      4.0, 4.0, 2.5, 1,
+      "thatched_round",
+      resolveRoofMaterial(biomeType, settlement.tier, "well"),
+      primaryAngle, 26
+    );
+    rawBuildings.push(wellBuilding);
+
+    // Historic Inn (South edge)
+    const innOffsetM = plazaWidM / 2 + 10;
+    const innPerpAngle = primaryAngle + Math.PI / 2;
+    const innCenter: Pt = [
+      center[0] + metersToUnits(innOffsetM * Math.cos(innPerpAngle)),
+      center[1] + metersToUnits(innOffsetM * Math.sin(innPerpAngle)),
+    ];
+    const innDim = BUILDING_DIMENSIONS.inn;
+    const innLen = range(rng, innDim.lengthRangeM[0], innDim.lengthRangeM[1]);
+    const innWid = range(rng, innDim.widthRangeM[0], innDim.widthRangeM[1]);
+    const innBld = createBuildingFootprint(
+      `bld_${settlement.id}_inn`,
+      "inn",
+      innCenter,
+      innLen, innWid,
+      range(rng, innDim.heightRangeM[0], innDim.heightRangeM[1]),
+      innDim.stories, innDim.roofType,
+      resolveRoofMaterial(biomeType, settlement.tier, "inn"),
+      primaryAngle,
+      innDim.defaultPitchDeg * pitchMult
+    );
+    rawBuildings.push(innBld);
+
+    // Cathedral or Temple (North edge)
+    const templeFunc: BuildingFunction = settlement.tier === "metropolis" || settlement.tier === "city" ? "cathedral" : "temple";
+    const templeDim = BUILDING_DIMENSIONS[templeFunc];
+    const templeOffsetM = -(plazaWidM / 2 + 14);
+    const templeCenter: Pt = [
+      center[0] + metersToUnits(templeOffsetM * Math.cos(innPerpAngle)),
+      center[1] + metersToUnits(templeOffsetM * Math.sin(innPerpAngle)),
+    ];
+    const templeLen = range(rng, templeDim.lengthRangeM[0], templeDim.lengthRangeM[1]);
+    const templeWid = range(rng, templeDim.widthRangeM[0], templeDim.widthRangeM[1]);
+    const templeBld = createBuildingFootprint(
+      `bld_${settlement.id}_temple`,
+      templeFunc,
+      templeCenter,
+      templeLen, templeWid,
+      range(rng, templeDim.heightRangeM[0], templeDim.heightRangeM[1]),
+      templeDim.stories, templeDim.roofType,
+      resolveRoofMaterial(biomeType, settlement.tier, templeFunc),
+      primaryAngle + Math.PI / 2,
+      templeDim.defaultPitchDeg * pitchMult
+    );
+    rawBuildings.push(templeBld);
+
+    // Townhall or Keep (West edge)
+    const civicFunc: BuildingFunction = settlement.type === "fortress_city" ? "keep" : "townhall";
+    const cDim = BUILDING_DIMENSIONS[civicFunc];
+    const civicOffsetM = -(plazaLenM / 2 + 15);
+    const civicCenter: Pt = [
+      center[0] + metersToUnits(civicOffsetM * Math.cos(primaryAngle)),
+      center[1] + metersToUnits(civicOffsetM * Math.sin(primaryAngle)),
+    ];
+    const civicBld = createBuildingFootprint(
+      `bld_${settlement.id}_civic`,
+      civicFunc,
+      civicCenter,
+      range(rng, cDim.lengthRangeM[0], cDim.lengthRangeM[1]),
+      range(rng, cDim.widthRangeM[0], cDim.widthRangeM[1]),
+      range(rng, cDim.heightRangeM[0], cDim.heightRangeM[1]),
+      cDim.stories, cDim.roofType,
+      resolveRoofMaterial(biomeType, settlement.tier, civicFunc),
+      primaryAngle,
+      cDim.defaultPitchDeg * pitchMult
+    );
+    rawBuildings.push(civicBld);
+
+    // Radial Roads
+    const radialCount = settlement.tier === "metropolis" ? 6 : settlement.tier === "city" ? 5 : 4;
+    const radialAngles: number[] = [];
+    for (let r = 0; r < radialCount; r++) {
+      const rAngle = primaryAngle + (r / radialCount) * Math.PI * 2 + (rng() - 0.5) * 0.1;
+      radialAngles.push(rAngle);
+
+      const roadLenM = radiusM * 1.15;
+      const steps = 6;
+      const pts: Pt[] = [];
+      const startM = Math.min(plazaLenM, plazaWidM) / 2;
+      for (let s = 0; s <= steps; s++) {
+        const dM = startM + ((roadLenM - startM) * s) / steps;
+        pts.push([
+          center[0] + metersToUnits(dM * Math.cos(rAngle)),
+          center[1] + metersToUnits(dM * Math.sin(rAngle)),
+        ]);
+      }
+      streets.push({
+        id: `str_${settlement.id}_radial_${r}`,
+        kind: "arterial",
+        surface: profile.streetSurface,
+        widthM: profile.primaryStreetWidthM,
+        points: pts,
+      });
+    }
+
+    // Defensive Enceinte (Curtain Walls, Bastions, Gatehouses)
+    const enableWalls = config?.enableDefensiveWalls !== false;
+    if (enableWalls) {
+      const wallRadiusM = radiusM * 0.56;
+      const wallRadiusUnits = metersToUnits(wallRadiusM);
+      const curtainWallSegments: Pt[][] = [];
+      const towers: DefensiveTower[] = [];
+      const gates: DefensiveGatehouse[] = [];
+
+      for (let r = 0; r < radialCount; r++) {
+        const nextR = (r + 1) % radialCount;
+        const a1 = radialAngles[r];
+        const a2 = radialAngles[nextR];
+
+        // Gatehouse at radial road piercing wall
+        const gateCenter: Pt = [
+          center[0] + wallRadiusUnits * Math.cos(a1),
+          center[1] + wallRadiusUnits * Math.sin(a1),
+        ];
+        const perpA = a1 + Math.PI / 2;
+        const gateSpanM = profile.primaryStreetWidthM + 4;
+        const t1Pos: Pt = [
+          gateCenter[0] + metersToUnits((gateSpanM / 2) * Math.cos(perpA)),
+          gateCenter[1] + metersToUnits((gateSpanM / 2) * Math.sin(perpA)),
+        ];
+        const t2Pos: Pt = [
+          gateCenter[0] - metersToUnits((gateSpanM / 2) * Math.cos(perpA)),
+          gateCenter[1] - metersToUnits((gateSpanM / 2) * Math.sin(perpA)),
+        ];
+
+        const gt1: DefensiveTower = { id: `tow_${settlement.id}_g_${r}_1`, center: t1Pos, radiusM: 3.8, heightM: 14.0, isGateTower: true };
+        const gt2: DefensiveTower = { id: `tow_${settlement.id}_g_${r}_2`, center: t2Pos, radiusM: 3.8, heightM: 14.0, isGateTower: true };
+        towers.push(gt1, gt2);
+
+        gates.push({
+          id: `gate_${settlement.id}_${r}`,
+          center: gateCenter,
+          roadAngleRad: a1,
+          widthM: gateSpanM,
+          depthM: 8.0,
+          towers: [gt1, gt2],
+        });
+
+        // Curtain wall arc between gate r and gate nextR
+        const arcSteps = 3;
+        const wallArcPts: Pt[] = [t1Pos];
+        for (let s = 1; s < arcSteps; s++) {
+          const interpA = a1 + ((a2 - a1 + Math.PI * 2) % (Math.PI * 2)) * (s / arcSteps);
+          const midPt: Pt = [
+            center[0] + wallRadiusUnits * Math.cos(interpA),
+            center[1] + wallRadiusUnits * Math.sin(interpA),
+          ];
+          const midTower: DefensiveTower = {
+            id: `tow_${settlement.id}_wall_${r}_${s}`,
+            center: midPt,
+            radiusM: 3.2,
+            heightM: 12.0,
+          };
+          towers.push(midTower);
+          wallArcPts.push(midPt);
+        }
+        const nextGateLeftTower = [
+          center[0] + wallRadiusUnits * Math.cos(a2) - metersToUnits((gateSpanM / 2) * Math.sin(a2)),
+          center[1] + wallRadiusUnits * Math.sin(a2) + metersToUnits((gateSpanM / 2) * Math.cos(a2)),
+        ] as Pt;
+        wallArcPts.push(nextGateLeftTower);
+
+        curtainWallSegments.push(wallArcPts);
+      }
+
+      defense = {
+        curtainWalls: curtainWallSegments,
+        wallThicknessM: settlement.tier === "metropolis" ? 4.2 : 3.2,
+        towers,
+        gates,
+        hasMoat: settlement.tier === "city" || settlement.tier === "metropolis",
+      };
+    }
+
+    // Inside walls: Patrician Manors & Common Artisans
+    const manorCount = settlement.tier === "metropolis" ? 8 : settlement.tier === "city" ? 5 : 2;
+    for (let m = 0; m < manorCount; m++) {
+      const mA = primaryAngle + 0.6 + m * 0.55;
+      const mDistM = range(rng, radiusM * 0.25, radiusM * 0.48);
+      const mCenter: Pt = [
+        center[0] + metersToUnits(mDistM * Math.cos(mA)),
+        center[1] + metersToUnits(mDistM * Math.sin(mA)),
+      ];
+      const mDim = BUILDING_DIMENSIONS.manor;
+      const manorBld = createBuildingFootprint(
+        `bld_${settlement.id}_manor_${++buildingIdCounter}`,
+        "manor",
+        mCenter,
+        range(rng, mDim.lengthRangeM[0], mDim.lengthRangeM[1]),
+        range(rng, mDim.widthRangeM[0], mDim.widthRangeM[1]),
+        range(rng, mDim.heightRangeM[0], mDim.heightRangeM[1]),
+        mDim.stories, "hip",
+        resolveRoofMaterial(biomeType, settlement.tier, "manor"),
+        mA, mDim.defaultPitchDeg * pitchMult
+      );
+      rawBuildings.push(manorBld);
+
+      const estatePoly = createParcelPolygon(mCenter, 24, 28, mA);
+      parcels.push({
+        id: `pcl_${settlement.id}_manor_${m}`,
+        boundary: estatePoly,
+        landUse: "mansion_estate",
+        areaM2: 24 * 28,
+        buildingIds: [manorBld.id],
+        fences: generateEnclosureFences(estatePoly, 6.0),
+        fillColor: "rgba(100, 155, 90, 0.22)",
+      });
+    }
+
+    // Common Artisan Burgage blocks
+    const artisanCount = settlement.tier === "metropolis" ? 45 : settlement.tier === "city" ? 28 : 14;
+    for (let a = 0; a < artisanCount; a++) {
+      const rIdx = a % radialCount;
+      const baseA = radialAngles[rIdx];
+      const side = a % 2 === 0 ? 1 : -1;
+      const dM = range(rng, radiusM * 0.22, radiusM * 0.48);
+      const perpA = baseA + side * (Math.PI / 2);
+      const setbackM = (profile.primaryStreetWidthM / 2) + 12;
+      const aCenter: Pt = [
+        center[0] + metersToUnits(dM * Math.cos(baseA) + setbackM * Math.cos(perpA)),
+        center[1] + metersToUnits(dM * Math.sin(baseA) + setbackM * Math.sin(perpA)),
+      ];
+      const func: BuildingFunction = a % 6 === 0 ? "blacksmith" : a % 4 === 0 ? "storehouse" : "cottage";
+      const dim = BUILDING_DIMENSIONS[func];
+      const aBld = createBuildingFootprint(
+        `bld_${settlement.id}_artisan_${++buildingIdCounter}`,
+        func,
+        aCenter,
+        range(rng, dim.lengthRangeM[0], dim.lengthRangeM[1]),
+        range(rng, dim.widthRangeM[0], dim.widthRangeM[1]),
+        range(rng, dim.heightRangeM[0], dim.heightRangeM[1]),
+        dim.stories, dim.roofType,
+        resolveRoofMaterial(biomeType, settlement.tier, func),
+        baseA, dim.defaultPitchDeg * pitchMult
+      );
+      rawBuildings.push(aBld);
+    }
+  }
+
+  // =========================================================================
+  // ARCHETYPE 2: LINEAR RIBBON (Runions Roadside Hamlets & Strip Crofts)
+  // =========================================================================
+  else if (morphology === "linear_ribbon") {
+    const spineLengthM = radiusM * 1.8;
+    const spineHalfUnits = metersToUnits(spineLengthM / 2);
+    const spineStart: Pt = [
+      center[0] - spineHalfUnits * Math.cos(primaryAngle),
+      center[1] - spineHalfUnits * Math.sin(primaryAngle),
+    ];
+    const spineEnd: Pt = [
+      center[0] + spineHalfUnits * Math.cos(primaryAngle),
+      center[1] + spineHalfUnits * Math.sin(primaryAngle),
+    ];
+
+    streets.push({
+      id: `str_${settlement.id}_spine`,
+      kind: "spine",
+      surface: profile.streetSurface,
+      widthM: profile.primaryStreetWidthM,
+      points: [spineStart, spineEnd],
+    });
+
+    // Roadside Town Well at the center
+    const wellBuilding = createBuildingFootprint(
+      `bld_${settlement.id}_well`,
+      "well",
+      center,
+      4.0, 4.0, 2.5, 1,
+      "thatched_round",
+      resolveRoofMaterial(biomeType, settlement.tier, "well"),
+      primaryAngle, 26
+    );
+    rawBuildings.push(wellBuilding);
+
+    // Roadside Coaching Inn & Chapel fronting the highway
+    const perpAngle = primaryAngle + Math.PI / 2;
+    const innCenter: Pt = [
+      center[0] + metersToUnits(14 * Math.cos(perpAngle)),
+      center[1] + metersToUnits(14 * Math.sin(perpAngle)),
+    ];
+    const innDim = BUILDING_DIMENSIONS.inn;
+    rawBuildings.push(createBuildingFootprint(
+      `bld_${settlement.id}_inn`,
+      "inn",
+      innCenter,
+      range(rng, innDim.lengthRangeM[0], innDim.lengthRangeM[1]),
+      range(rng, innDim.widthRangeM[0], innDim.widthRangeM[1]),
+      range(rng, innDim.heightRangeM[0], innDim.heightRangeM[1]),
+      innDim.stories, innDim.roofType,
+      resolveRoofMaterial(biomeType, settlement.tier, "inn"),
+      primaryAngle, innDim.defaultPitchDeg * pitchMult
+    ));
+
+    const chapelCenter: Pt = [
+      center[0] - metersToUnits(14 * Math.cos(perpAngle)),
+      center[1] - metersToUnits(14 * Math.sin(perpAngle)),
+    ];
+    const chDim = BUILDING_DIMENSIONS.chapel;
+    rawBuildings.push(createBuildingFootprint(
+      `bld_${settlement.id}_chapel`,
+      "chapel",
+      chapelCenter,
+      range(rng, chDim.lengthRangeM[0], chDim.lengthRangeM[1]),
+      range(rng, chDim.widthRangeM[0], chDim.widthRangeM[1]),
+      range(rng, chDim.heightRangeM[0], chDim.heightRangeM[1]),
+      chDim.stories, chDim.roofType,
+      resolveRoofMaterial(biomeType, settlement.tier, "chapel"),
+      primaryAngle, chDim.defaultPitchDeg * pitchMult
+    ));
+
+    // Roadside Strip Cottages & Deep Agricultural Strip Crofts
+    const cottageCount = settlement.tier === "hamlet" ? 10 : 6;
+    for (let c = 0; c < cottageCount; c++) {
+      const side = c % 2 === 0 ? 1 : -1;
+      const t = (Math.floor(c / 2) + 1) / (cottageCount / 2 + 1);
+      const roadOffsetM = (t - 0.5) * (spineLengthM * 0.75);
+      const setbackM = (profile.primaryStreetWidthM / 2) + 10;
+
+      const cCenter: Pt = [
+        center[0] + metersToUnits(roadOffsetM * Math.cos(primaryAngle) + side * setbackM * Math.cos(perpAngle)),
+        center[1] + metersToUnits(roadOffsetM * Math.sin(primaryAngle) + side * setbackM * Math.sin(perpAngle)),
+      ];
+
+      const cFunc: BuildingFunction = c === 1 ? "blacksmith" : "cottage";
+      const dim = BUILDING_DIMENSIONS[cFunc];
+      const cotBld = createBuildingFootprint(
+        `bld_${settlement.id}_ribbon_${++buildingIdCounter}`,
+        cFunc,
+        cCenter,
+        range(rng, dim.lengthRangeM[0], dim.lengthRangeM[1]),
+        range(rng, dim.widthRangeM[0], dim.widthRangeM[1]),
+        range(rng, dim.heightRangeM[0], dim.heightRangeM[1]),
+        dim.stories, dim.roofType,
+        resolveRoofMaterial(biomeType, settlement.tier, cFunc),
+        primaryAngle, dim.defaultPitchDeg * pitchMult
+      );
+      rawBuildings.push(cotBld);
+
+      // Deep perpendicular strip croft parcel behind cottage
+      const croftWidthM = 16;
+      const croftDepthM = 48;
+      const croftCenter: Pt = [
+        cCenter[0] + metersToUnits(side * (croftDepthM / 2 + 6) * Math.cos(perpAngle)),
+        cCenter[1] + metersToUnits(side * (croftDepthM / 2 + 6) * Math.sin(perpAngle)),
+      ];
+      const croftPoly = createParcelPolygon(croftCenter, croftWidthM, croftDepthM, primaryAngle);
+      parcels.push({
+        id: `pcl_${settlement.id}_croft_${c}`,
+        boundary: croftPoly,
+        landUse: "strip_croft",
+        areaM2: croftWidthM * croftDepthM,
+        buildingIds: [cotBld.id],
+        cropType: c % 2 === 0 ? "wheat" : "vegetables",
+        furrows: generateCropFurrows(croftPoly, 4.0),
+        fillColor: c % 2 === 0 ? "rgba(225, 195, 115, 0.25)" : "rgba(135, 165, 85, 0.22)",
+      });
+    }
+  }
+
+  // =========================================================================
+  // ARCHETYPE 3: WATERFRONT PORT (Chen Coastal & Quayside Conformance)
+  // =========================================================================
+  else if (morphology === "waterfront_port") {
+    const water = detectNearbyWaterBody(geo, center);
+    const quayAngle = water.hasWater ? water.tangentAngle : primaryAngle;
+    const inlandPerpAngle = quayAngle + Math.PI / 2;
+
+    const quayLengthM = radiusM * 1.35;
+    const halfQuayUnits = metersToUnits(quayLengthM / 2);
+    const quayStart: Pt = [
+      center[0] - halfQuayUnits * Math.cos(quayAngle),
+      center[1] - halfQuayUnits * Math.sin(quayAngle),
+    ];
+    const quayEnd: Pt = [
+      center[0] + halfQuayUnits * Math.cos(quayAngle),
+      center[1] + halfQuayUnits * Math.sin(quayAngle),
+    ];
+
+    const quayStreet: StreetSegment = {
+      id: `str_${settlement.id}_quayside`,
+      kind: "waterfront",
+      surface: "paved_stone",
+      widthM: profile.primaryStreetWidthM + 2.0,
+      points: [quayStart, quayEnd],
+    };
+    streets.push(quayStreet);
+
+    // Wooden Piers extending into water
+    const pierCount = settlement.tier === "city" ? 4 : settlement.tier === "town" ? 3 : 2;
+    const piers: WaterfrontPier[] = [];
+    for (let p = 0; p < pierCount; p++) {
+      const frac = (p + 1) / (pierCount + 1);
+      const rootM = (frac - 0.5) * quayLengthM * 0.75;
+      const rootPos: Pt = [
+        center[0] + metersToUnits(rootM * Math.cos(quayAngle)),
+        center[1] + metersToUnits(rootM * Math.sin(quayAngle)),
+      ];
+      const pierLenM = range(rng, 26, 42);
+      const waterPerpAngle = inlandPerpAngle + Math.PI; // jut into water
+      const tipPos: Pt = [
+        rootPos[0] + metersToUnits(pierLenM * Math.cos(waterPerpAngle)),
+        rootPos[1] + metersToUnits(pierLenM * Math.sin(waterPerpAngle)),
+      ];
+      piers.push({
+        id: `pier_${settlement.id}_${p}`,
+        start: rootPos,
+        end: tipPos,
+        widthM: 4.5,
+        lengthM: pierLenM,
+      });
+    }
+
+    waterfront = {
+      quayStreetId: quayStreet.id,
+      waterEdgePolyline: [quayStart, quayEnd],
+      piers,
+      quaysideWidthM: quayStreet.widthM,
+    };
+
+    // Public Town Well along the quayside square
+    const wellBuilding = createBuildingFootprint(
+      `bld_${settlement.id}_well`,
+      "well",
+      center,
+      4.0, 4.0, 2.5, 1,
+      "thatched_round",
+      resolveRoofMaterial(biomeType, settlement.tier, "well"),
+      quayAngle, 26
+    );
+    rawBuildings.push(wellBuilding);
+
+    // Waterfront Wharf Tavern & Storehouses
+    const tavernCenter: Pt = [
+      center[0] + metersToUnits(16 * Math.cos(inlandPerpAngle) + 20 * Math.cos(quayAngle)),
+      center[1] + metersToUnits(16 * Math.sin(inlandPerpAngle) + 20 * Math.sin(quayAngle)),
+    ];
+    const tvDim = BUILDING_DIMENSIONS.tavern;
+    rawBuildings.push(createBuildingFootprint(
+      `bld_${settlement.id}_tavern`,
+      "tavern",
+      tavernCenter,
+      range(rng, tvDim.lengthRangeM[0], tvDim.lengthRangeM[1]),
+      range(rng, tvDim.widthRangeM[0], tvDim.widthRangeM[1]),
+      range(rng, tvDim.heightRangeM[0], tvDim.heightRangeM[1]),
+      tvDim.stories, tvDim.roofType,
+      resolveRoofMaterial(biomeType, settlement.tier, "tavern"),
+      quayAngle, tvDim.defaultPitchDeg * pitchMult
+    ));
+
+    // Storehouses and Fish Market
+    for (let s = 0; s < 3; s++) {
+      const sPos: Pt = [
+        center[0] + metersToUnits(16 * Math.cos(inlandPerpAngle) - (18 + s * 22) * Math.cos(quayAngle)),
+        center[1] + metersToUnits(16 * Math.sin(inlandPerpAngle) - (18 + s * 22) * Math.sin(quayAngle)),
+      ];
+      const stDim = BUILDING_DIMENSIONS.storehouse;
+      rawBuildings.push(createBuildingFootprint(
+        `bld_${settlement.id}_wharf_store_${s}`,
+        "storehouse",
+        sPos,
+        range(rng, stDim.lengthRangeM[0], stDim.lengthRangeM[1]),
+        range(rng, stDim.widthRangeM[0], stDim.widthRangeM[1]),
+        range(rng, stDim.heightRangeM[0], stDim.heightRangeM[1]),
+        stDim.stories, stDim.roofType,
+        "timber",
+        quayAngle, stDim.defaultPitchDeg * pitchMult
+      ));
+    }
+
+    // Inland Upper Tier (Residential & Temple)
+    const upperStreetDistM = 36;
+    const upperStart: Pt = [
+      quayStart[0] + metersToUnits(upperStreetDistM * Math.cos(inlandPerpAngle)),
+      quayStart[1] + metersToUnits(upperStreetDistM * Math.sin(inlandPerpAngle)),
+    ];
+    const upperEnd: Pt = [
+      quayEnd[0] + metersToUnits(upperStreetDistM * Math.cos(inlandPerpAngle)),
+      quayEnd[1] + metersToUnits(upperStreetDistM * Math.sin(inlandPerpAngle)),
+    ];
+    streets.push({
+      id: `str_${settlement.id}_upper_lane`,
+      kind: "lane",
+      surface: "cobblestone",
+      widthM: profile.secondaryStreetWidthM,
+      points: [upperStart, upperEnd],
+    });
+
+    const templePos: Pt = [
+      center[0] + metersToUnits(46 * Math.cos(inlandPerpAngle)),
+      center[1] + metersToUnits(46 * Math.sin(inlandPerpAngle)),
+    ];
+    const tmpDim = BUILDING_DIMENSIONS.temple;
+    rawBuildings.push(createBuildingFootprint(
+      `bld_${settlement.id}_temple`,
+      "temple",
+      templePos,
+      range(rng, tmpDim.lengthRangeM[0], tmpDim.lengthRangeM[1]),
+      range(rng, tmpDim.widthRangeM[0], tmpDim.widthRangeM[1]),
+      range(rng, tmpDim.heightRangeM[0], tmpDim.heightRangeM[1]),
+      tmpDim.stories, tmpDim.roofType,
+      resolveRoofMaterial(biomeType, settlement.tier, "temple"),
+      quayAngle, tmpDim.defaultPitchDeg * pitchMult
+    ));
+
+    const portCottageCount = settlement.tier === "city" ? 18 : 8;
+    for (let c = 0; c < portCottageCount; c++) {
+      const xOffM = (c - portCottageCount / 2) * 16;
+      const cPos: Pt = [
+        center[0] + metersToUnits(upperStreetDistM * Math.cos(inlandPerpAngle) + xOffM * Math.cos(quayAngle)),
+        center[1] + metersToUnits(upperStreetDistM * Math.sin(inlandPerpAngle) + xOffM * Math.sin(quayAngle)),
+      ];
+      const ctDim = BUILDING_DIMENSIONS.cottage;
+      rawBuildings.push(createBuildingFootprint(
+        `bld_${settlement.id}_port_cot_${++buildingIdCounter}`,
+        "cottage",
+        cPos,
+        range(rng, ctDim.lengthRangeM[0], ctDim.lengthRangeM[1]),
+        range(rng, ctDim.widthRangeM[0], ctDim.widthRangeM[1]),
+        range(rng, ctDim.heightRangeM[0], ctDim.heightRangeM[1]),
+        1, "gable",
+        resolveRoofMaterial(biomeType, settlement.tier, "cottage"),
+        quayAngle, ctDim.defaultPitchDeg * pitchMult
+      ));
+    }
+  }
+
+  // =========================================================================
+  // ARCHETYPE 4: CROSSROADS MARKET (Agricultural Village Green)
+  // =========================================================================
+  else {
+    const marketRadiusM = 32;
+    const halfLenUnits = metersToUnits(marketRadiusM);
+    const greenPts: Pt[] = [];
+    for (let i = 0; i < 4; i++) {
+      const a = primaryAngle + (i * Math.PI) / 2;
+      greenPts.push([
+        center[0] + halfLenUnits * Math.cos(a),
+        center[1] + halfLenUnits * Math.sin(a),
+      ]);
+    }
+    marketSquare = greenPts;
+
+    parcels.push({
+      id: `pcl_${settlement.id}_market_green`,
+      boundary: greenPts,
+      landUse: "plaza",
+      areaM2: marketRadiusM * marketRadiusM * 2,
+      buildingIds: [],
+      fillColor: "rgba(165, 185, 130, 0.24)",
+    });
+
+    streets.push({
+      id: `str_${settlement.id}_green_perimeter`,
+      kind: "plaza",
+      surface: "gravel",
+      widthM: profile.primaryStreetWidthM,
+      points: [...greenPts, greenPts[0]],
+    });
+
+    // Town Well at center
+    rawBuildings.push(createBuildingFootprint(
+      `bld_${settlement.id}_well`,
+      "well",
+      center,
+      4.0, 4.0, 2.5, 1,
+      "thatched_round",
+      resolveRoofMaterial(biomeType, settlement.tier, "well"),
+      primaryAngle, 26
+    ));
+
+    // Coaching Inn & Smithy
+    const innPos: Pt = [
+      center[0] + metersToUnits((marketRadiusM + 12) * Math.cos(primaryAngle)),
+      center[1] + metersToUnits((marketRadiusM + 12) * Math.sin(primaryAngle)),
+    ];
+    const innDim = BUILDING_DIMENSIONS.inn;
+    rawBuildings.push(createBuildingFootprint(
+      `bld_${settlement.id}_inn`,
+      "inn",
+      innPos,
+      range(rng, innDim.lengthRangeM[0], innDim.lengthRangeM[1]),
+      range(rng, innDim.widthRangeM[0], innDim.widthRangeM[1]),
+      range(rng, innDim.heightRangeM[0], innDim.heightRangeM[1]),
+      innDim.stories, innDim.roofType,
+      resolveRoofMaterial(biomeType, settlement.tier, "inn"),
+      primaryAngle + Math.PI / 2, innDim.defaultPitchDeg * pitchMult
+    ));
+
+    const smithPos: Pt = [
+      center[0] - metersToUnits((marketRadiusM + 12) * Math.cos(primaryAngle)),
+      center[1] - metersToUnits((marketRadiusM + 12) * Math.sin(primaryAngle)),
+    ];
+    const smDim = BUILDING_DIMENSIONS.blacksmith;
+    rawBuildings.push(createBuildingFootprint(
+      `bld_${settlement.id}_smith`,
+      "blacksmith",
+      smithPos,
+      range(rng, smDim.lengthRangeM[0], smDim.lengthRangeM[1]),
+      range(rng, smDim.widthRangeM[0], smDim.widthRangeM[1]),
+      range(rng, smDim.heightRangeM[0], smDim.heightRangeM[1]),
+      1, "gable",
+      resolveRoofMaterial(biomeType, settlement.tier, "blacksmith"),
+      primaryAngle + Math.PI / 2, smDim.defaultPitchDeg * pitchMult
+    ));
+
+    // 4 Converging Crossroads Arterials
+    for (let r = 0; r < 4; r++) {
+      const rA = primaryAngle + (r * Math.PI) / 2 + (rng() - 0.5) * 0.12;
+      const roadLenM = radiusM * 1.1;
+      const startPos: Pt = [
+        center[0] + metersToUnits(marketRadiusM * Math.cos(rA)),
+        center[1] + metersToUnits(marketRadiusM * Math.sin(rA)),
+      ];
+      const endPos: Pt = [
+        center[0] + metersToUnits(roadLenM * Math.cos(rA)),
+        center[1] + metersToUnits(roadLenM * Math.sin(rA)),
+      ];
+      streets.push({
+        id: `str_${settlement.id}_cross_${r}`,
+        kind: "arterial",
+        surface: "dirt",
+        widthM: profile.primaryStreetWidthM,
+        points: [startPos, endPos],
+      });
+    }
+
+    // Cottages clustering around crossroads
+    for (let c = 0; c < 12; c++) {
+      const a = primaryAngle + (c / 12) * Math.PI * 2 + 0.2;
+      const dM = range(rng, marketRadiusM + 14, radiusM * 0.55);
+      const cPos: Pt = [
+        center[0] + metersToUnits(dM * Math.cos(a)),
+        center[1] + metersToUnits(dM * Math.sin(a)),
+      ];
+      const cDim = BUILDING_DIMENSIONS.cottage;
+      rawBuildings.push(createBuildingFootprint(
+        `bld_${settlement.id}_cross_cot_${++buildingIdCounter}`,
+        "cottage",
+        cPos,
+        range(rng, cDim.lengthRangeM[0], cDim.lengthRangeM[1]),
+        range(rng, cDim.widthRangeM[0], cDim.widthRangeM[1]),
+        range(rng, cDim.heightRangeM[0], cDim.heightRangeM[1]),
+        1, "gable",
+        resolveRoofMaterial(biomeType, settlement.tier, "cottage"),
+        a, cDim.defaultPitchDeg * pitchMult
+      ));
+    }
+  }
+
+  // =========================================================================
+  // UNIVERSAL GREENBELT (Outer Ring: Working Farms, Cattle Ranches & Mills)
+  // Shared across all archetypes to guarantee agricultural livelihood
+  // =========================================================================
+  const farmCount = settlement.tier === "nomadic" ? 2 : settlement.tier === "hamlet" ? 3 : settlement.tier === "village" ? 6 : 10;
+  const cropTypes: ("wheat" | "barley" | "vegetables" | "pasture" | "fallow")[] = [
+    "wheat", "barley", "vegetables", "pasture", "fallow",
+  ];
+
+  for (let f = 0; f < farmCount; f++) {
+    const fAngle = primaryAngle + ((f + 0.5) / farmCount) * Math.PI * 2 + (rng() - 0.5) * 0.15;
+    const fDistM = range(rng, radiusM * 0.68, radiusM * 0.98);
+    const fCenter: Pt = [
+      center[0] + metersToUnits(fDistM * Math.cos(fAngle)),
+      center[1] + metersToUnits(fDistM * Math.sin(fAngle)),
+    ];
+
+    const fieldW = range(rng, 42, 65);
+    const fieldL = range(rng, 50, 78);
+    const fieldPoly = createParcelPolygon(fCenter, fieldW, fieldL, fAngle);
+    const cType = cropTypes[f % cropTypes.length];
+
+    const fhDim = BUILDING_DIMENSIONS.farmhouse;
+    const fhPos: Pt = [
+      fCenter[0] - metersToUnits(fieldL * 0.3 * Math.cos(fAngle)),
+      fCenter[1] - metersToUnits(fieldL * 0.3 * Math.sin(fAngle)),
+    ];
+    const fhBld = createBuildingFootprint(
+      `bld_${settlement.id}_farmhouse_${++buildingIdCounter}`,
+      "farmhouse",
+      fhPos,
+      range(rng, fhDim.lengthRangeM[0], fhDim.lengthRangeM[1]),
+      range(rng, fhDim.widthRangeM[0], fhDim.widthRangeM[1]),
+      range(rng, fhDim.heightRangeM[0], fhDim.heightRangeM[1]),
+      2, "gable",
+      resolveRoofMaterial(biomeType, settlement.tier, "farmhouse"),
+      fAngle, fhDim.defaultPitchDeg * pitchMult
+    );
+    rawBuildings.push(fhBld);
+
+    const bDim = BUILDING_DIMENSIONS.barn;
+    const bPos: Pt = [
+      fhPos[0] + metersToUnits(15 * Math.sin(fAngle)),
+      fhPos[1] - metersToUnits(15 * Math.cos(fAngle)),
+    ];
+    const barnBld = createBuildingFootprint(
+      `bld_${settlement.id}_barn_${++buildingIdCounter}`,
+      "barn",
+      bPos,
+      range(rng, bDim.lengthRangeM[0], bDim.lengthRangeM[1]),
+      range(rng, bDim.widthRangeM[0], bDim.widthRangeM[1]),
+      range(rng, bDim.heightRangeM[0], bDim.heightRangeM[1]),
+      1, "gable",
+      "timber",
+      fAngle, bDim.defaultPitchDeg * pitchMult
+    );
+    rawBuildings.push(barnBld);
+
+    parcels.push({
+      id: `pcl_${settlement.id}_farm_${f}`,
+      boundary: fieldPoly,
+      landUse: "farm_field",
+      areaM2: fieldW * fieldL,
+      buildingIds: [fhBld.id, barnBld.id],
+      cropType: cType,
+      furrows: generateCropFurrows(fieldPoly, 4.5),
+      fences: generateEnclosureFences(fieldPoly, 7.0),
+      fillColor:
+        cType === "wheat"
+          ? "rgba(225, 195, 115, 0.28)"
+          : cType === "barley"
+          ? "rgba(210, 180, 105, 0.26)"
+          : cType === "vegetables"
+          ? "rgba(135, 165, 85, 0.25)"
+          : "rgba(150, 130, 105, 0.22)",
+    });
+  }
+
+  // Cattle Ranches
+  const ranchCount = settlement.tier === "nomadic" ? 1 : settlement.tier === "hamlet" ? 2 : settlement.tier === "village" ? 3 : 5;
+  for (let c = 0; c < ranchCount; c++) {
+    const cAngle = primaryAngle + ((c + 0.25) / ranchCount) * Math.PI * 2 + (rng() - 0.5) * 0.15;
+    const cDistM = range(rng, radiusM * 0.70, radiusM * 0.95);
+    const rCenter: Pt = [
+      center[0] + metersToUnits(cDistM * Math.cos(cAngle)),
+      center[1] + metersToUnits(cDistM * Math.sin(cAngle)),
+    ];
+
+    const ranchW = range(rng, 48, 70);
+    const ranchL = range(rng, 55, 80);
+    const ranchPoly = createParcelPolygon(rCenter, ranchW, ranchL, cAngle);
+
+    const csDim = BUILDING_DIMENSIONS.cattle_shed;
+    const csCenter: Pt = [
+      rCenter[0] + metersToUnits(ranchW * 0.25 * Math.cos(cAngle + Math.PI / 2)),
+      rCenter[1] + metersToUnits(ranchW * 0.25 * Math.sin(cAngle + Math.PI / 2)),
+    ];
+    const csBld = createBuildingFootprint(
+      `bld_${settlement.id}_cattle_shed_${++buildingIdCounter}`,
+      "cattle_shed",
+      csCenter,
+      range(rng, csDim.lengthRangeM[0], csDim.lengthRangeM[1]),
+      range(rng, csDim.widthRangeM[0], csDim.widthRangeM[1]),
+      range(rng, csDim.heightRangeM[0], csDim.heightRangeM[1]),
+      1, "gable",
+      "timber",
+      cAngle, csDim.defaultPitchDeg * pitchMult
+    );
+    rawBuildings.push(csBld);
+
+    parcels.push({
+      id: `pcl_${settlement.id}_ranch_${c}`,
+      boundary: ranchPoly,
+      landUse: "cattle_ranch",
+      areaM2: ranchW * ranchL,
+      buildingIds: [csBld.id],
+      fences: generateEnclosureFences(ranchPoly, 8.0),
+      fillColor: "rgba(120, 180, 95, 0.28)",
+    });
+  }
+
+  // Windmill on knoll
+  if (settlement.tier !== "nomadic") {
+    const wmAngle = primaryAngle + 2.1;
+    const wmDistM = radiusM * 0.88;
+    const wmCenter: Pt = [
+      center[0] + metersToUnits(wmDistM * Math.cos(wmAngle)),
+      center[1] + metersToUnits(wmDistM * Math.sin(wmAngle)),
+    ];
+    const wmDim = BUILDING_DIMENSIONS.windmill;
+    rawBuildings.push(createBuildingFootprint(
+      `bld_${settlement.id}_windmill`,
+      "windmill",
+      wmCenter,
+      range(rng, wmDim.lengthRangeM[0], wmDim.lengthRangeM[1]),
+      range(rng, wmDim.widthRangeM[0], wmDim.widthRangeM[1]),
+      range(rng, wmDim.heightRangeM[0], wmDim.heightRangeM[1]),
+      3, "tower_conical",
+      "cedar_shingle",
+      wmAngle, wmDim.defaultPitchDeg * pitchMult
+    ));
+  }
+
+  // Watermill adjacent to civic pond
   const wmWaterCenter: Pt = [
     pondCenter[0] + metersToUnits((pondRadiusM + 8) * Math.cos(pondAngle)),
     pondCenter[1] + metersToUnits((pondRadiusM + 8) * Math.sin(pondAngle)),
   ];
   const wmWaterDim = BUILDING_DIMENSIONS.watermill;
-  const watermillBld = createBuildingFootprint(
+  rawBuildings.push(createBuildingFootprint(
     `bld_${settlement.id}_watermill`,
     "watermill",
     wmWaterCenter,
     range(rng, wmWaterDim.lengthRangeM[0], wmWaterDim.lengthRangeM[1]),
     range(rng, wmWaterDim.widthRangeM[0], wmWaterDim.widthRangeM[1]),
     range(rng, wmWaterDim.heightRangeM[0], wmWaterDim.heightRangeM[1]),
-    2,
-    "gable",
+    2, "gable",
     "timber",
-    pondAngle + Math.PI / 2,
-    wmWaterDim.defaultPitchDeg * pitchMult
-  );
-  rawBuildings.push(watermillBld);
+    pondAngle + Math.PI / 2, wmWaterDim.defaultPitchDeg * pitchMult
+  ));
 
-  // ---------------------------------------------------------------------------
-  // 4. Finetune Stage (Rule-Based Relocation & Conflict Resolution)
-  // ---------------------------------------------------------------------------
+  // =========================================================================
+  // SOCIO-ECONOMIC ESTABLISHMENTS GENERATION (Eigengrau / Ross model)
+  // =========================================================================
+  const establishments = generateSettlementEstablishments(
+    settlement.id,
+    settlement.name,
+    settlement.tier,
+    rawBuildings,
+    geo,
+    center,
+    seedString
+  );
+
+  // =========================================================================
+  // FINETUNE STAGE (Spatial Relaxation, Clearance & Collision Resolution)
+  // =========================================================================
   const rawVerification = verifyCadastre(rawBuildings, streets, center, radiusUnits, geo, settlement.name);
 
   const tFinetuneStart = performance.now();
@@ -771,19 +1140,14 @@ export function generateCadastre(
 
   const afterVerification = verifyCadastre(finetunedBuildings, streets, center, radiusUnits, geo, settlement.name);
 
-  // ---------------------------------------------------------------------------
-  // 5. Cadastre Stats Summary
-  // ---------------------------------------------------------------------------
+  // =========================================================================
+  // STATS SUMMARY
+  // =========================================================================
   let totalRoofAreaM2 = 0;
   let totalStreetLengthM = 0;
   let residentialCount = 0;
   const matCounts: Record<RoofMaterial, number> = {
-    thatch: 0,
-    slate: 0,
-    terracotta: 0,
-    cedar_shingle: 0,
-    copper_verdigris: 0,
-    timber: 0,
+    thatch: 0, slate: 0, terracotta: 0, cedar_shingle: 0, copper_verdigris: 0, timber: 0,
   };
 
   for (const b of finetunedBuildings) {
@@ -817,6 +1181,7 @@ export function generateCadastre(
     settlementName: settlement.name,
     tier: settlement.tier,
     type: settlement.type,
+    morphology,
     center,
     radiusUnits,
     radiusM: Math.round(radiusM),
@@ -826,6 +1191,9 @@ export function generateCadastre(
     civicWell,
     civicPond,
     marketSquare,
+    defense,
+    waterfront,
+    establishments,
     rawBuildingCount: rawBuildings.length,
     stats: {
       totalBuildings: finetunedBuildings.length,
@@ -858,12 +1226,12 @@ export function createBuildingFootprint(
   roofType: RoofType,
   roofMaterial: RoofMaterial,
   angleRad: number,
-  pitchDeg: number
+  pitchDeg: number,
+  establishment?: EstablishmentInfo
 ): BuildingFootprint {
   const halfLenUnits = metersToUnits(lengthM / 2);
   const halfWidUnits = metersToUnits(widthM / 2);
 
-  // 4 corners of rectangular building footprint
   const cornersLocal: Pt[] = [
     [-halfLenUnits, -halfWidUnits],
     [halfLenUnits, -halfWidUnits],
@@ -877,7 +1245,6 @@ export function createBuildingFootprint(
     return [center[0] + rx, center[1] + ry];
   });
 
-  // Ridge crest running along length axis
   const ridgeStart: Pt = [
     center[0] - halfLenUnits * Math.cos(angleRad),
     center[1] - halfLenUnits * Math.sin(angleRad),
@@ -887,13 +1254,9 @@ export function createBuildingFootprint(
     center[1] + halfLenUnits * Math.sin(angleRad),
   ];
 
-  // Palette
   const palette = ROOF_MATERIAL_PALETTES[roofMaterial] ?? ROOF_MATERIAL_PALETTES.thatch;
-
-  // Compute roof slope facets
   const facets: RoofFacet[] = [];
 
-  // Facet 1: Left slope
   const slope1Angle = angleRad - Math.PI / 2;
   const sunExp1 = computeSunExposure(slope1Angle, pitchDeg);
   facets.push({
@@ -904,7 +1267,6 @@ export function createBuildingFootprint(
     color: sunExp1 > 0.55 ? palette.sunlitHex : palette.shadedHex,
   });
 
-  // Facet 2: Right slope
   const slope2Angle = angleRad + Math.PI / 2;
   const sunExp2 = computeSunExposure(slope2Angle, pitchDeg);
   facets.push({
@@ -915,8 +1277,6 @@ export function createBuildingFootprint(
     color: sunExp2 > 0.55 ? palette.sunlitHex : palette.shadedHex,
   });
 
-  // Ground cast shadow polygon:
-  // Sun from NW (315°), shadow projects toward SE (135°)
   const shadowDistUnits = metersToUnits(heightM * 0.95);
   const shadowAzimuthRad = (135 * Math.PI) / 180;
   const sOffset: Pt = [
@@ -933,10 +1293,8 @@ export function createBuildingFootprint(
     footprint[3],
   ];
 
-  // Chimney placement
   const chimneys: Pt[] = [];
   if (stories > 0 && buildingType !== "market_stall" && buildingType !== "well") {
-    // 1 chimney for cottages/barns, 2-3 chimneys for inns and mansions
     const chimCount = buildingType === "manor" ? 3 : buildingType === "inn" ? 2 : 1;
     for (let c = 0; c < chimCount; c++) {
       const chimOff = halfLenUnits * (0.6 - c * 0.4);
@@ -963,6 +1321,7 @@ export function createBuildingFootprint(
     facets,
     chimneys,
     orientationRad: angleRad,
+    establishment,
   };
 }
 
