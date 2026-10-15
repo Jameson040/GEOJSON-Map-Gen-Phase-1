@@ -51,7 +51,7 @@ export function HumanModal({
       JSON.stringify(
         {
           type: "FeatureCollection",
-          metadata: { generator: "Terra Ex Nihilo — Layer 3 Habitable Zones", layer: "human", region: existing.regionName, seed: existing.seedUsed, note: "STRUCTURE ONLY: no population. Population is Layer 4, time-dependent and generated per zone." },
+          metadata: { generator: "Terra Ex Nihilo — Layer 4 Habitable Zones", layer: "human", region: existing.regionName, seed: existing.seedUsed, note: "STRUCTURE ONLY: no population. Population is Layer 5, time-dependent and generated per zone." },
           features: existing.settlements.map((s) => ({
             type: "Feature",
             id: s.id,
@@ -85,8 +85,8 @@ export function HumanModal({
               <Home className="h-5 w-5" />
             </div>
             <div>
-              <h2 className="text-lg font-semibold text-white">Layer 3 — Habitable Zones · {region.descriptor.name}</h2>
-              <p className="text-xs text-zinc-400">Sited on frozen L1, supplied-read from frozen L2. This layer marks only livable places — population is Layer 4.</p>
+              <h2 className="text-lg font-semibold text-white">Layer 4 — Habitable Zones · {region.descriptor.name}</h2>
+              <p className="text-xs text-zinc-400">Sited on frozen L1, supplied-read from frozen L3. This layer marks only livable places — population is Layer 5.</p>
             </div>
           </div>
           {!busy && (
@@ -108,7 +108,7 @@ export function HumanModal({
         <div className="flex-1 space-y-4 overflow-y-auto p-6 text-xs">
           {!bio && (
             <div className="rounded-xl border border-amber-500/35 bg-amber-950/30 p-3 text-amber-200">
-              <strong>Layer 2 missing.</strong> Settlements must be fed — generate the Biosphere (L2) for this region first.
+              <strong>Layer 3 missing.</strong> Settlements must be fed — generate the Biosphere (L3) for this region first.
             </div>
           )}
 
@@ -118,7 +118,7 @@ export function HumanModal({
                 <strong className="text-orange-400">Generation</strong> marks candidate habitable zones everywhere — a metropolis site mid-desert, a fishing site on a summit. <strong className="text-orange-400">Finetune</strong> resolves each against the frozen layers: livable ground &amp; terrain, fresh water in reach, required resource roles reachable from L2, structural carrying capacity (over-built sites are <em>demoted</em>), spacing, area-scaled caps, and hierarchy.
               </div>
               <div className="rounded-xl border border-orange-500/30 bg-orange-950/20 p-3 text-[11px] leading-relaxed text-orange-200/90">
-                <strong>The population contract.</strong> This layer holds only structure: site type, tier, habitation evidence (lived now / ancient-pulse / potential), water and resource reach, capacity band and capacity score — never a headcount. Population is <strong>Layer 4</strong>, generated per zone from all three layers beneath, time-dependent (1B → 8B worlds), and designed to be re-run or scrubbed without touching these lower layers.
+                <strong>The population contract.</strong> This layer holds only structure: site type, tier, habitation evidence (lived now / ancient-pulse / potential), water and resource reach, capacity band and capacity score — never a headcount. Population is <strong>Layer 5</strong>, generated per zone from all three layers beneath, time-dependent (1B → 8B worlds), and designed to be re-run or scrubbed without touching these lower layers.
               </div>
               <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
                 <div>
@@ -205,7 +205,7 @@ export function HumanModal({
           {tab === "catalog" && (
             <>
               <div className="rounded-xl border border-white/10 bg-white/[0.02] p-3 text-[11px] leading-relaxed text-zinc-400">
-                <strong className="text-orange-400">{SETTLEMENT_CATALOG.length} habitable-site kinds</strong> across six tiers, from seasonal camps to a port-metropolis candidate. Capacities are <em>structural bands</em> — the land's headroom for Layer 4, not people. Each lists hard site needs (answered by L1), reachable food roles (answered by L2), water reach, supply radius and spacing.
+                <strong className="text-orange-400">{SETTLEMENT_CATALOG.length} habitable-site kinds</strong> across six tiers, from seasonal camps to a port-metropolis candidate. Capacities are <em>structural bands</em> — the land's headroom for Layer 5, not people. Each lists hard site needs (answered by L1), reachable food roles (answered by L3), water reach, supply radius and spacing.
               </div>
               <div className="overflow-x-auto rounded-xl border border-white/10">
                 <table className="w-full text-left font-mono text-[10px]">

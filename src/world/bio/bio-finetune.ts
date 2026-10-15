@@ -8,7 +8,7 @@ import { kmToUnits } from "../constants";
 import type { RNG } from "../rng";
 
 // ---------------------------------------------------------------------------
-// LAYER 2 FINETUNE — the rule half of the adversarial pair.
+// LAYER 3 FINETUNE — the rule half of the adversarial pair.
 //
 // Takes the creative scatter and resolves every contradiction against the
 // frozen geography by DROPPING, RELOCATING or ADDING populations:
@@ -20,7 +20,7 @@ import type { RNG } from "../rng";
 //   R5 forage dependency (grazing livestock need pasture/grass biomes)
 //   R6 density caps per compartment (no species piles, no overcrowding)
 //   R7 food security   (every climate-capable region ends with its required
-//                        human-dependency roles present — Layer 3's contract)
+//                        human-dependency roles present — Layer 4's contract)
 // The geographic layer itself is never modified.
 // ---------------------------------------------------------------------------
 
@@ -173,7 +173,7 @@ export function runBioFinetune(
     final.push(...pruned);
   }
 
-  // --- R7: food security — Layer 3's contract --------------------------------
+  // --- R7: food security — Layer 4's contract --------------------------------
   const addedForRoles: string[] = [];
   let added = 0;
   const hasRole = (role: string) => final.some((f) => f.roles.includes(role as BioFeature["roles"][number]));

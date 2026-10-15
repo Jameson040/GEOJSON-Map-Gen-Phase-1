@@ -3,7 +3,6 @@ import type {
   BBox,
   ConflictRecord,
   GenProgress,
-  GeneratedRegion,
   MapFeature,
   MapThemeId,
   PlanetConfig,
@@ -30,28 +29,29 @@ import {
 import { VerifierModal } from "./components/VerifierModal";
 import { SizeClassModal } from "./components/SizeClassModal";
 import { ResourceModal } from "./components/ResourceModal";
-import { generateResourceLayer, DEFAULT_RESOURCE_CONFIG, type ResourceFilterConfig, type ResourceLayerResult } from "./world/resources";
+import { generateResourceLayer, DEFAULT_RESOURCE_CONFIG, type ResourceFilterConfig } from "./world/resources";
 import { BioModal } from "./components/BioModal";
 import { generateBioLayer } from "./world/bio/bio-generate";
-import type { BioConfig, BioLayerResult } from "./world/bio/bio-types";
+import type { BioConfig } from "./world/bio/bio-types";
 import { CATEGORY_COLORS } from "./world/bio/species-catalog";
 import { HumanModal } from "./components/HumanModal";
 import { generateHumanLayer } from "./world/human/human-generate";
-import type { HumanConfig, HumanLayerResult } from "./world/human/human-types";
+import type { HumanConfig } from "./world/human/human-types";
 import { PopulationModal } from "./components/PopulationModal";
 import { generatePopulationLayer } from "./world/population/population-generate";
-import type { PopulationConfig, PopulationLayerResult } from "./world/population/population-types";
+import type { PopulationConfig } from "./world/population/population-types";
 import { CadastreModal } from "./components/CadastreModal";
 import { generateCadastreLayer } from "./world/cadastre/cadastre-cache";
-import type { CadastreLayerResult } from "./world/cadastre/cadastre-types";
 import { RouteModal } from "./components/RouteModal";
 import { generateRouteLayer } from "./world/routes/route-generate";
-import type { RouteConfig, RouteLayerResult } from "./world/routes/route-types";
+import type { RouteConfig } from "./world/routes/route-types";
 import type { WorldLayerId } from "./world/layers";
+import { LAYER_BY_ID } from "./world/layers";
 import { BackupModal } from "./components/BackupModal";
 import { RecoveryBoundary } from "./components/RecoveryBoundary";
-import { createCheckpoint, deserializePopulations, type WorkspaceCheckpoint } from "./workspace/checkpoint";
-import { exportMacroGeoJSON, exportRegionGeoJSON, downloadText } from "./world/export-geojson";
+import { createCheckpoint, deserializeCadastres, deserializePopulations, type WorkspaceCheckpoint } from "./workspace/checkpoint";
+import { useWorldLayers } from "./workspace/world-store";
+import { exportMacroGeoJSON, exportRegionWorldGeoJSON, downloadText } from "./world/export-geojson";
 import {
   Globe2,
   Sliders,
@@ -75,7 +75,6 @@ import {
 import { SIZE_PROFILES } from "./world/size-classes";
 import { finetunePlanetShapes } from "./world/tier1-finetune";
 import { GenerationGate } from "./workspace/generation-gate";
-import { evictRegionIndexes, withoutRegion } from "./workspace/lifecycle";
 
 const PLANET_BOUNDS: BBox = { minX: 0, minY: 0, maxX: PLANET_WIDTH, maxY: PLANET_HEIGHT };
 
@@ -97,8 +96,18 @@ export default function App() {
   const [macroBusy, setMacroBusy] = useState(false);
   const [macroProgress, setMacroProgress] = useState<GenProgress | null>(null);
 
-  // ---- Tier 2 cache ----
-  const [regionDetail, setRegionDetail] = useState<Map<string, GeneratedRegion>>(new Map());
+  // ---- Tier 2 cache + world layer store ----
+  const world = useWorldLayers();
+  const {
+    regionDetail, resourceLayers, bioLayers, humanLayers, popLayers, routeLayers, cadastreLayers,
+    grids: regionGrids,
+    setLayer: setWorldLayer,
+    invalidateAbove: invalidateWorldAbove,
+    removeLayer: removeWorldLayer,
+    unloadRegion: unloadWorldRegion,
+    clearAll: clearWorld,
+    replaceAll: replaceWorld,
+  } = world;
   const [regionBusy, setRegionBusy] = useState<string | null>(null);
   const [regionProgress, setRegionProgress] = useState<GenProgress | null>(null);
   const [pendingRegion, setPendingRegion] = useState<RegionDescriptor | null>(null);
@@ -125,39 +134,33 @@ export default function App() {
   const [showSizes, setShowSizes] = useState(false);
 
   // ---- Layer: geological resources (metals, earths, stones, salts, fuels, fantasy) ----
-  const [resourceLayers, setResourceLayers] = useState<Map<string, ResourceLayerResult>>(new Map());
   const [resourceConfig, setResourceConfig] = useState<ResourceFilterConfig>(DEFAULT_RESOURCE_CONFIG);
   const [resourceBusy, setResourceBusy] = useState(false);
   const [showResourceModal, setShowResourceModal] = useState(false);
   const [resourceVisible, setResourceVisible] = useState(true);
 
-  // ---- Layer 2: biosphere (separate layer, geography stays frozen) ----
-  const [bioLayers, setBioLayers] = useState<Map<string, BioLayerResult>>(new Map());
+  // ---- Layer 3: biosphere (separate layer, geography stays frozen) ----
   const [bioBusy, setBioBusy] = useState(false);
   const [bioProgress, setBioProgress] = useState<GenProgress | null>(null);
   const [showBioModal, setShowBioModal] = useState(false);
   const [bioVisible, setBioVisible] = useState(true);
   const [bioShowRaw, setBioShowRaw] = useState(false);
 
-  // ---- Layer 3: settlements (separate layer, L1 + L2 stay frozen) ----
-  const [humanLayers, setHumanLayers] = useState<Map<string, HumanLayerResult>>(new Map());
+  // ---- Layer 4: habitable zones (separate layer, L1 + L2 + L3 stay frozen) ----
   const [humanBusy, setHumanBusy] = useState(false);
   const [humanProgress, setHumanProgress] = useState<GenProgress | null>(null);
   const [showHumanModal, setShowHumanModal] = useState(false);
   const [humanVisible, setHumanVisible] = useState(true);
   const [humanShowRaw, setHumanShowRaw] = useState(false);
-  const [popLayers, setPopLayers] = useState<Map<string, PopulationLayerResult>>(new Map());
   const [popBusy, setPopBusy] = useState(false);
   const [popProgress, setPopProgress] = useState<GenProgress | null>(null);
   const [showPopModal, setShowPopModal] = useState(false);
   const [popVisible, setPopVisible] = useState(true);
-  const [routeLayers, setRouteLayers] = useState<Map<string, RouteLayerResult>>(new Map());
   const [routeBusy, setRouteBusy] = useState(false);
   const [routeProgress, setRouteProgress] = useState<GenProgress | null>(null);
   const [showRouteModal, setShowRouteModal] = useState(false);
   const [routeVisible, setRouteVisible] = useState(true);
   const [cadastreVisible, setCadastreVisible] = useState(true);
-  const [cadastreLayers, setCadastreLayers] = useState<Map<string, CadastreLayerResult>>(new Map());
   const [cadastreBusy, setCadastreBusy] = useState(false);
   const [showCadastreModal, setShowCadastreModal] = useState(false);
   const [geoVisible, setGeoVisible] = useState(true);
@@ -165,7 +168,6 @@ export default function App() {
 
   const generationGate = useRef(new GenerationGate());
   const initialGenerationStarted = useRef(false);
-  const regionGrids = useRef<Map<string, SpatialGrid>>(new Map());
   const [activeJob, setActiveJob] = useState<string | null>(null);
   const [workflowIssue, setWorkflowIssue] = useState<{ title: string; detail: string } | null>(null);
   const isBusy = activeJob !== null || cadastreBusy || resourceBusy || routeBusy;
@@ -217,12 +219,8 @@ export default function App() {
       setMacro(result);
       setPlanetConfig(cfg);
       // A new planet invalidates every region and every layer built on them
-      setRegionDetail(new Map());
-      setResourceLayers(new Map());
-      setBioLayers(new Map());
-      setHumanLayers(new Map());
-      setPopLayers(new Map());
-      regionGrids.current.clear();
+      // (routes + cadastres included: region IDs restart per planet)
+      clearWorld();
       setTabs([PLANET_TAB]);
       setActiveTabId("planet");
       setSelected(null);
@@ -238,7 +236,7 @@ export default function App() {
       setShowSetup(false);
       finish();
     }
-  }, [beginJob, reportFailure]);
+  }, [beginJob, reportFailure, clearWorld]);
 
   useEffect(() => {
     if (initialGenerationStarted.current) return;
@@ -311,19 +309,9 @@ export default function App() {
       });
       try {
         const result = await generateRegionDetail(r, cfg, setRegionProgress);
-        evictRegionIndexes(regionGrids.current, r.id);
-        setRegionDetail((prev) => {
-          const next = new Map(prev);
-          next.set(r.id, result);
-          return next;
-        });
+        setWorldLayer(r.id, "geo", result);
         // Regenerated geography invalidates every layer built on it
-        setResourceLayers((prev) => withoutRegion(prev, r.id));
-        setBioLayers((prev) => withoutRegion(prev, r.id));
-        setHumanLayers((prev) => withoutRegion(prev, r.id));
-        setPopLayers((prev) => withoutRegion(prev, r.id));
-        setRouteLayers((prev) => withoutRegion(prev, r.id));
-        setCadastreLayers((prev) => withoutRegion(prev, r.id));
+        invalidateWorldAbove(r.id, "geo");
         setFocusTarget(null);
         setShowRawMode(false);
         openRegionTab(r);
@@ -335,7 +323,7 @@ export default function App() {
         finish();
       }
     },
-    [macro, beginJob, reportFailure, openRegionTab]
+    [macro, beginJob, reportFailure, openRegionTab, setWorldLayer, invalidateWorldAbove]
   );
 
   const runRegion = useCallback(
@@ -377,19 +365,12 @@ export default function App() {
       setWorkflowIssue({ title: "Cannot unload during generation", detail: "Wait until the active job finishes." });
       return;
     }
-    setRegionDetail((prev) => withoutRegion(prev, id));
-    setResourceLayers((prev) => withoutRegion(prev, id));
-    setBioLayers((prev) => withoutRegion(prev, id));
-    setHumanLayers((prev) => withoutRegion(prev, id));
-    setPopLayers((prev) => withoutRegion(prev, id));
-    setRouteLayers((prev) => withoutRegion(prev, id));
-    setCadastreLayers((prev) => withoutRegion(prev, id));
-    evictRegionIndexes(regionGrids.current, id);
+    unloadWorldRegion(id);
     setSelected(null);
     setFocusTarget(null);
     setTabs((prev) => prev.filter((t) => t.regionId !== id));
     setActiveTabId((cur) => (cur === `region:${id}` ? "planet" : cur));
-  }, []);
+  }, [unloadWorldRegion]);
 
   const closeTab = useCallback((id: string) => {
     setTabs((prev) => prev.filter((t) => t.id !== id));
@@ -414,11 +395,7 @@ export default function App() {
       setResourceBusy(true);
       try {
         const result = await generateResourceLayer(activeRegion, cfg);
-        setResourceLayers((prev) => {
-          const next = new Map(prev);
-          next.set(activeRegion.descriptor.id, result);
-          return next;
-        });
+        setWorldLayer(activeRegion.descriptor.id, "resource", result);
         setResourceConfig(cfg);
         setResourceVisible(true);
       } catch (e) {
@@ -429,10 +406,10 @@ export default function App() {
         finish();
       }
     },
-    [activeRegion, beginJob, reportFailure]
+    [activeRegion, beginJob, reportFailure, setWorldLayer]
   );
 
-  // ---- Layer 2 handles for the active region ----
+  // ---- Layer 3 handles for the active region ----
   const activeBio = activeTab.regionId ? bioLayers.get(activeTab.regionId) ?? null : null;
 
   const runBio = useCallback(
@@ -444,16 +421,9 @@ export default function App() {
       setBioProgress({ stage: 1, totalStages: 4, stageName: "Initialising", percent: 2, featuresCount: 0, elapsedMs: 0 });
       try {
         const result = await generateBioLayer(activeRegion, cfg, setBioProgress);
-        setBioLayers((prev) => {
-          const next = new Map(prev);
-          next.set(activeRegion.descriptor.id, result);
-          return next;
-        });
+        setWorldLayer(activeRegion.descriptor.id, "bio", result);
         // A new biosphere invalidates settlement + population + route + cadastre layers fed by it
-        setHumanLayers((prev) => withoutRegion(prev, activeRegion.descriptor.id));
-        setPopLayers((prev) => withoutRegion(prev, activeRegion.descriptor.id));
-        setRouteLayers((prev) => withoutRegion(prev, activeRegion.descriptor.id));
-        setCadastreLayers((prev) => withoutRegion(prev, activeRegion.descriptor.id));
+        invalidateWorldAbove(activeRegion.descriptor.id, "bio");
         setBioVisible(true);
         setBioShowRaw(false);
       } catch (e) {
@@ -465,7 +435,7 @@ export default function App() {
         finish();
       }
     },
-    [activeRegion, beginJob, reportFailure]
+    [activeRegion, beginJob, reportFailure, setWorldLayer, invalidateWorldAbove]
   );
 
   const bioItems = useMemo(() => {
@@ -492,11 +462,9 @@ export default function App() {
       setPopProgress({ stage: 1, totalStages: 4, stageName: "Initialising", percent: 2, featuresCount: 0, elapsedMs: 0 });
       try {
         const result = await generatePopulationLayer(activeRegion, activeBio, activeHuman, cfg, setPopProgress);
-        setPopLayers((prev) => {
-          const next = new Map(prev);
-          next.set(activeRegion.descriptor.id, result);
-          return next;
-        });
+        setWorldLayer(activeRegion.descriptor.id, "population", result);
+        // A new population model re-scales every cadastre roof: evict them (JIT refills on zoom)
+        invalidateWorldAbove(activeRegion.descriptor.id, "population");
       } catch (e) {
         reportFailure("Population generation failed", e);
       } finally {
@@ -505,13 +473,13 @@ export default function App() {
         finish();
       }
     },
-    [activeRegion, activeBio, activeHuman, beginJob, reportFailure]
+    [activeRegion, activeBio, activeHuman, beginJob, reportFailure, setWorldLayer, invalidateWorldAbove]
   );
 
   const clearPopulation = useCallback(() => {
     if (!activeTab.regionId) return;
-    setPopLayers((prev) => withoutRegion(prev, activeTab.regionId!));
-  }, [activeTab.regionId]);
+    removeWorldLayer(activeTab.regionId, "population");
+  }, [activeTab.regionId, removeWorldLayer]);
 
   const runHuman = useCallback(
     async (cfg: HumanConfig) => {
@@ -527,15 +495,9 @@ export default function App() {
       try {
         const activeRes = activeRegion ? resourceLayers.get(activeRegion.descriptor.id) ?? null : null;
         const result = await generateHumanLayer(activeRegion, activeBio, cfg, setHumanProgress, activeRes);
-        setHumanLayers((prev) => {
-          const next = new Map(prev);
-          next.set(activeRegion.descriptor.id, result);
-          return next;
-        });
+        setWorldLayer(activeRegion.descriptor.id, "human", result);
         // Invalidate higher layers dependent on settlements
-        setPopLayers((prev) => withoutRegion(prev, activeRegion.descriptor.id));
-        setRouteLayers((prev) => withoutRegion(prev, activeRegion.descriptor.id));
-        setCadastreLayers((prev) => withoutRegion(prev, activeRegion.descriptor.id));
+        invalidateWorldAbove(activeRegion.descriptor.id, "human");
         setHumanVisible(true);
         setHumanShowRaw(false);
       } catch (e) {
@@ -547,7 +509,7 @@ export default function App() {
         finish();
       }
     },
-    [activeRegion, activeBio, resourceLayers, beginJob, reportFailure]
+    [activeRegion, activeBio, resourceLayers, beginJob, reportFailure, setWorldLayer, invalidateWorldAbove]
   );
 
   const humanItems = useMemo(() => {
@@ -574,11 +536,7 @@ export default function App() {
       try {
         const activeRes = activeRegion ? resourceLayers.get(activeRegion.descriptor.id) ?? null : null;
         const result = await generateRouteLayer(activeRegion, activeHuman.settlements, cfg, setRouteProgress, activeRes);
-        setRouteLayers((prev) => {
-          const next = new Map(prev);
-          next.set(activeRegion.descriptor.id, result);
-          return next;
-        });
+        setWorldLayer(activeRegion.descriptor.id, "routes", result);
         setRouteVisible(true);
       } catch (e) {
         reportFailure("Route network generation failed", e);
@@ -589,7 +547,7 @@ export default function App() {
         finish();
       }
     },
-    [activeRegion, activeHuman, resourceLayers, beginJob, reportFailure]
+    [activeRegion, activeHuman, resourceLayers, beginJob, reportFailure, setWorldLayer]
   );
 
   /** Open (or generate) a world layer for a region from the sidebar strip. */
@@ -628,7 +586,7 @@ export default function App() {
         let geo = regionDetail.get(descriptor.id);
         if (!geo) {
           geo = await generateRegionDetail(descriptor, { detailLevel: "standard", riverDensity: 1, reliefIntensity: 1, moisture: 1, glaciation: 1 }, setRegionProgress);
-          setRegionDetail((prev) => new Map(prev).set(descriptor.id, geo!));
+          setWorldLayer(descriptor.id, "geo", geo);
         }
         setRegionBusy(null);
         setRegionProgress(null);
@@ -637,7 +595,7 @@ export default function App() {
         let res = resourceLayers.get(descriptor.id);
         if (!res) {
           res = await generateResourceLayer(geo, resourceConfig);
-          setResourceLayers((prev) => new Map(prev).set(descriptor.id, res!));
+          setWorldLayer(descriptor.id, "resource", res);
         }
 
         // Step 3: Biosphere
@@ -646,7 +604,7 @@ export default function App() {
         let bio = bioLayers.get(descriptor.id);
         if (!bio) {
           bio = await generateBioLayer(geo, { richness: 1, wildShare: 1 }, setBioProgress);
-          setBioLayers((prev) => new Map(prev).set(descriptor.id, bio!));
+          setWorldLayer(descriptor.id, "bio", bio);
         }
         setBioBusy(false);
         setBioProgress(null);
@@ -657,16 +615,19 @@ export default function App() {
         let human = humanLayers.get(descriptor.id);
         if (!human) {
           human = await generateHumanLayer(geo, bio, { density: 1, urbanisation: 0.5 }, setHumanProgress, res);
-          setHumanLayers((prev) => new Map(prev).set(descriptor.id, human!));
+          setWorldLayer(descriptor.id, "human", human);
         }
         setHumanBusy(false);
         setHumanProgress(null);
 
-        // Step 5: Population
+        // Step 5: Population — reuse the existing model when one is already present
         setPopBusy(true);
         setPopProgress({ stage: 1, totalStages: 3, stageName: "Simulating Epoch & Demographics", percent: 80, featuresCount: 0, elapsedMs: 0 });
-        const pop = await generatePopulationLayer(geo, bio, human, { era: "current", year: 2026, targetScale: 1 }, setPopProgress);
-        setPopLayers((prev) => new Map(prev).set(descriptor.id, pop));
+        let pop = popLayers.get(descriptor.id);
+        if (!pop) {
+          pop = await generatePopulationLayer(geo, bio, human, { era: "current", year: 2026, targetScale: 1 }, setPopProgress);
+          setWorldLayer(descriptor.id, "population", pop);
+        }
         setPopBusy(false);
         setPopProgress(null);
 
@@ -680,15 +641,18 @@ export default function App() {
             pavedHighwayShare: 0.45,
             coastalShipping: true,
           }, setRouteProgress, res);
-          setRouteLayers((prev) => new Map(prev).set(descriptor.id, route!));
+          setWorldLayer(descriptor.id, "routes", route);
         }
         setRouteBusy(false);
         setRouteProgress(null);
 
         // Step 7: Cadastre (Layer 7) — streets, parcels, and village house roofs
         setCadastreBusy(true);
-        const cadastreRes = await generateCadastreLayer(geo, human.settlements, pop.model);
-        setCadastreLayers((prev) => new Map(prev).set(descriptor.id, cadastreRes));
+        let cadastreRes = cadastreLayers.get(descriptor.id);
+        if (!cadastreRes) {
+          cadastreRes = await generateCadastreLayer(geo, human.settlements, pop.model);
+          setWorldLayer(descriptor.id, "cadastre", cadastreRes);
+        }
         setCadastreBusy(false);
       } catch (err) {
         reportFailure("Full cascade generation failed", err);
@@ -707,7 +671,7 @@ export default function App() {
         finish();
       }
     },
-    [beginJob, openRegionTab, regionDetail, resourceConfig, resourceLayers, bioLayers, humanLayers, routeLayers, reportFailure]
+    [beginJob, openRegionTab, regionDetail, resourceConfig, resourceLayers, bioLayers, humanLayers, popLayers, routeLayers, cadastreLayers, reportFailure, setWorldLayer]
   );
 
   // Grids are memoised per tab so switching tabs is instant and never rebuilds
@@ -867,30 +831,43 @@ export default function App() {
       biosphere: bioLayers,
       humans: humanLayers,
       populations: popLayers,
+      resources: resourceLayers,
+      routes: routeLayers,
+      cadastres: cadastreLayers,
+      resourceConfig,
       view: {
         tabs,
         activeTabId,
         themeId,
         layers,
-        visibility: { geo: geoVisible, bio: bioVisible, human: humanVisible, population: popVisible },
+        visibility: {
+          geo: geoVisible,
+          bio: bioVisible,
+          human: humanVisible,
+          population: popVisible,
+          resource: resourceVisible,
+          routes: routeVisible,
+          cadastre: cadastreVisible,
+        },
         raw: { geography: showRawMode, biosphere: bioShowRaw, human: humanShowRaw },
       },
     });
-  }, [macro, regionDetail, bioLayers, humanLayers, popLayers, tabs, activeTabId, themeId, layers, geoVisible, bioVisible, humanVisible, popVisible, showRawMode, bioShowRaw, humanShowRaw]);
+  }, [macro, regionDetail, bioLayers, humanLayers, popLayers, resourceLayers, routeLayers, cadastreLayers, resourceConfig, tabs, activeTabId, themeId, layers, geoVisible, bioVisible, humanVisible, popVisible, resourceVisible, routeVisible, cadastreVisible, showRawMode, bioShowRaw, humanShowRaw]);
 
   const restoreWorkspaceCheckpoint = useCallback((checkpoint: WorkspaceCheckpoint) => {
     if (generationGate.current.activeJob) throw new Error("Cannot restore while generation is running");
-    regionGrids.current.clear();
     setMacro(checkpoint.macro);
     setPlanetConfig(checkpoint.macro.config);
-    setRegionDetail(new Map(checkpoint.regions.map((r) => [r.descriptor.id, r])));
-    setBioLayers(new Map(checkpoint.biosphere.map((b) => [b.regionId, b])));
-    setHumanLayers(new Map(checkpoint.humans.map((h) => [h.regionId, h])));
-    if (checkpoint.populations) {
-      setPopLayers(deserializePopulations(checkpoint.populations));
-    } else {
-      setPopLayers(new Map());
-    }
+    replaceWorld({
+      geo: new Map(checkpoint.regions.map((r) => [r.descriptor.id, r])),
+      bio: new Map(checkpoint.biosphere.map((b) => [b.regionId, b])),
+      human: new Map(checkpoint.humans.map((h) => [h.regionId, h])),
+      population: deserializePopulations(checkpoint.populations),
+      resource: checkpoint.resources ? new Map(checkpoint.resources.map((r) => [r.regionId, r])) : undefined,
+      routes: checkpoint.routes ? new Map(checkpoint.routes.map((r) => [r.regionId, r])) : undefined,
+      cadastre: deserializeCadastres(checkpoint.cadastres),
+    });
+    if (checkpoint.resourceConfig) setResourceConfig(checkpoint.resourceConfig);
     setTabs(checkpoint.view.tabs);
     setActiveTabId(checkpoint.view.activeTabId);
     setThemeId(checkpoint.view.themeId);
@@ -901,6 +878,9 @@ export default function App() {
     if (checkpoint.view.visibility.population !== undefined) {
       setPopVisible(checkpoint.view.visibility.population);
     }
+    if (checkpoint.view.visibility.resource !== undefined) setResourceVisible(checkpoint.view.visibility.resource);
+    if (checkpoint.view.visibility.routes !== undefined) setRouteVisible(checkpoint.view.visibility.routes);
+    if (checkpoint.view.visibility.cadastre !== undefined) setCadastreVisible(checkpoint.view.visibility.cadastre);
     setShowRawMode(checkpoint.view.raw.geography);
     setBioShowRaw(checkpoint.view.raw.biosphere);
     setHumanShowRaw(checkpoint.view.raw.human);
@@ -912,13 +892,21 @@ export default function App() {
     setShowHumanModal(false);
     setShowPopModal(false);
     setWorkflowIssue(null);
-  }, []);
+  }, [replaceWorld]);
 
   const handleExport = () => {
     if (mode === "region" && activeRegion) {
+      const rid = activeRegion.descriptor.id;
       downloadText(
-        `region-${activeRegion.descriptor.name.replace(/\s+/g, "-").toLowerCase()}.geojson`,
-        exportRegionGeoJSON(activeRegion)
+        `region-${activeRegion.descriptor.name.replace(/\s+/g, "-").toLowerCase()}-world.geojson`,
+        exportRegionWorldGeoJSON(activeRegion, {
+          resource: resourceLayers.get(rid) ?? null,
+          bio: bioLayers.get(rid) ?? null,
+          human: humanLayers.get(rid) ?? null,
+          population: popLayers.get(rid) ?? null,
+          routes: routeLayers.get(rid) ?? null,
+          cadastre: cadastreLayers.get(rid) ?? null,
+        })
       );
     } else if (macro) {
       downloadText(`planet-${macro.config.seed}-macro.geojson`, exportMacroGeoJSON(macro));
@@ -1251,10 +1239,10 @@ export default function App() {
                 <button
                   onClick={() => runFullCascade(activeRegion.descriptor)}
                   disabled={isBusy}
-                  title="Run automated pipeline from L1 Geography down to L4 Demographics for this region"
+                  title={`Run the automated pipeline from ${LAYER_BY_ID.geo.short} Geography through ${LAYER_BY_ID.cadastre.short} Cadastre for this region`}
                   className="flex items-center gap-1 rounded border border-cyan-400/40 bg-cyan-400/15 px-2 py-0.5 font-mono text-[10px] font-semibold text-cyan-300 transition hover:bg-cyan-400/25 disabled:opacity-50"
                 >
-                  ⚡ Cascade All (L1→L4)
+                  ⚡ Cascade All (L1→L7)
                 </button>
                 <button
                   onClick={() => configureRegion(activeRegion.descriptor)}
@@ -1271,7 +1259,7 @@ export default function App() {
                   title="Geological & Mineral Resources — metals, stone, clay, salts, fuels, fantasy veins"
                   className="flex items-center gap-1 rounded border border-amber-500/40 bg-amber-500/15 px-2 py-0.5 font-mono text-[10px] font-semibold text-amber-300 transition hover:bg-amber-500/25"
                 >
-                  ⛏️ {activeResource ? `Res · ${activeResource.deposits.length} lodes` : "Resources (L2)"}
+                  ⛏️ {activeResource ? `${LAYER_BY_ID.resource.short} · ${activeResource.deposits.length} lodes` : `Resources (${LAYER_BY_ID.resource.short})`}
                 </button>
                 {activeResource && (
                   <button
@@ -1319,18 +1307,18 @@ export default function App() {
                 <button
                   onClick={() => setShowHumanModal(true)}
                   disabled={!activeBio || isBusy}
-                  title={activeBio ? "Layer 3 — Settlements, fed by this biosphere" : "Generate the Biosphere (L2) first"}
+                  title={activeBio ? `${LAYER_BY_ID.human.label} (Layer ${LAYER_BY_ID.human.index}) — fed by this biosphere` : `Generate the Biosphere (${LAYER_BY_ID.bio.short}) first`}
                   className="flex items-center gap-1 rounded border border-orange-500/40 bg-orange-500/15 px-2 py-0.5 font-mono text-[10px] font-semibold text-orange-300 transition hover:bg-orange-500/25 disabled:opacity-40"
                 >
-                  🏘️ {activeHuman ? `L3 · ${activeHuman.settlements.length} zones` : "Habitable Zones (L3)"}
+                  🏘️ {activeHuman ? `${LAYER_BY_ID.human.short} · ${activeHuman.settlements.length} zones` : `Habitable Zones (${LAYER_BY_ID.human.short})`}
                 </button>
                 <button
                   onClick={() => setShowPopModal(true)}
                   disabled={!activeHuman || isBusy}
-                  title={activeHuman ? "Layer 4 — Population, generated per zone on all materials beneath" : "Generate Habitable Zones (L3) first"}
+                  title={activeHuman ? `Layer ${LAYER_BY_ID.population.index} — Population, generated per zone on all materials beneath` : `Generate Habitable Zones (${LAYER_BY_ID.human.short}) first`}
                   className="flex items-center gap-1 rounded border border-sky-500/40 bg-sky-500/15 px-2 py-0.5 font-mono text-[10px] font-semibold text-sky-300 transition hover:bg-sky-500/25 disabled:opacity-40"
                 >
-                  👥 {activePop ? `L4 · ${activePop.report.finalOccupancy.toLocaleString()} ppl` : "Population (L4)"}
+                  👥 {activePop ? `${LAYER_BY_ID.population.short} · ${activePop.report.finalOccupancy.toLocaleString()} ppl` : `Population (${LAYER_BY_ID.population.short})`}
                 </button>
                 {activePop && (
                   <button
@@ -1482,6 +1470,7 @@ export default function App() {
                         humans={humanLayers}
                         pops={popLayers}
                         routes={routeLayers}
+                        cadastres={cadastreLayers}
                         activeRegionId={activeTab.regionId ?? null}
                         onOpen={requestRegion}
                         onRerollRegion={rerollRegion}
@@ -1659,7 +1648,7 @@ export default function App() {
         cadastreLayer={activeCadastre}
         onCadastreGenerated={(res) => {
           if (activeRegion) {
-            setCadastreLayers((prev) => new Map(prev).set(activeRegion.descriptor.id, res));
+            setWorldLayer(activeRegion.descriptor.id, "cadastre", res);
           }
         }}
         onFocusSettlement={(s) => {

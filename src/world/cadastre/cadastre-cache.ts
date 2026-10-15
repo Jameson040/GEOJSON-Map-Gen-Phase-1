@@ -10,9 +10,43 @@ import { generateCadastre } from "./cadastre-generate";
 // Enables "Google Earth for Fantasy World Lite" deep zooming without memory
 // explosion: generates cadastral street networks and village house roofs
 // lazily on-demand when the camera enters zoom range, deterministically.
+//
+// CACHE CORRECTNESS (see PROJECT_ANALYSIS.md §5.1.1): the key fingerprints
+// everything a cadastre is a function of — the region, the settlement, the
+// population model that sizes roofs, and the cadastre config. The frozen
+// generators restart their ID counters on every run, so settlement IDs alone
+// are NOT sufficient: a regenerated human layer reuses ids like "set_1" and
+// would otherwise be served the previous generation's streets. Higher layers
+// therefore also call clearCadastreCache(regionId) whenever the inputs a
+// cadastre depends on are regenerated or unloaded.
 // ---------------------------------------------------------------------------
 
 const cadastreCache = new Map<string, SettlementCadastre>();
+
+/** Deterministic fingerprint of the population model that scales a cadastre. */
+function populationFingerprint(population?: ZonePopulation): string {
+  if (!population) return "none";
+  return `${population.occupancy}:${population.hardCap}`;
+}
+
+/** Deterministic fingerprint of the cadastre generation config. */
+function configFingerprint(config?: CadastreConfig): string {
+  if (!config) return "default";
+  return `${config.buildingDensity}:${config.roofPitchMultiplier}:${config.customSeed ?? ""}:${config.forceMorphology ?? ""}:${config.enableDefensiveWalls ?? ""}`;
+}
+
+/**
+ * Full cache key. Pure and exported so tests can assert that different
+ * population models or configs can never collide onto one cached cadastre.
+ */
+export function cadastreCacheKey(
+  regionId: string,
+  settlementId: string,
+  population?: ZonePopulation,
+  config?: CadastreConfig
+): string {
+  return `${regionId}::${settlementId}::${populationFingerprint(population)}::${configFingerprint(config)}`;
+}
 
 export function getCadastreForSettlement(
   geo: GeneratedRegion,
@@ -20,7 +54,7 @@ export function getCadastreForSettlement(
   population?: ZonePopulation,
   config?: CadastreConfig
 ): SettlementCadastre {
-  const cacheKey = `${geo.descriptor.id}::${settlement.id}`;
+  const cacheKey = cadastreCacheKey(geo.descriptor.id, settlement.id, population, config);
   const existing = cadastreCache.get(cacheKey);
   if (existing) return existing;
 
@@ -29,12 +63,23 @@ export function getCadastreForSettlement(
   return created;
 }
 
-export function hasCachedCadastre(regionId: string, settlementId: string): boolean {
-  return cadastreCache.has(`${regionId}::${settlementId}`);
+/** True when this settlement is cached for exactly these population + config inputs. */
+export function hasCachedCadastre(
+  regionId: string,
+  settlementId: string,
+  population?: ZonePopulation,
+  config?: CadastreConfig
+): boolean {
+  return cadastreCache.has(cadastreCacheKey(regionId, settlementId, population, config));
 }
 
-export function peekCachedCadastre(regionId: string, settlementId: string): SettlementCadastre | undefined {
-  return cadastreCache.get(`${regionId}::${settlementId}`);
+export function peekCachedCadastre(
+  regionId: string,
+  settlementId: string,
+  population?: ZonePopulation,
+  config?: CadastreConfig
+): SettlementCadastre | undefined {
+  return cadastreCache.get(cadastreCacheKey(regionId, settlementId, population, config));
 }
 
 export function clearCadastreCache(regionId?: string): void {
@@ -50,7 +95,12 @@ export function clearCadastreCache(regionId?: string): void {
   }
 }
 
-/** Batch generator for entire region (for Cascade All or Layer 5 button) */
+/** Number of resident cache entries (diagnostics & tests). */
+export function cadastreCacheSize(): number {
+  return cadastreCache.size;
+}
+
+/** Batch generator for entire region (for Cascade All or Layer 7 button) */
 export async function generateCadastreLayer(
   geo: GeneratedRegion,
   settlements: Settlement[],

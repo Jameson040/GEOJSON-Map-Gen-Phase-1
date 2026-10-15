@@ -20,11 +20,11 @@ import { makeRng, range, type RNG } from "../rng";
 import { makeStem } from "../names";
 
 // ---------------------------------------------------------------------------
-// LAYER 3 GENERATION — creative and unconstrained, and POPULATION-FREE.
+// LAYER 4 GENERATION — creative and unconstrained, and POPULATION-FREE.
 //
 // Candidate habitable zones of every type are dropped anywhere: a metropolis
 // site mid-desert, a fishing site on a summit. Nobody lives anywhere yet —
-// population is Layer 4, produced per zone against all three layers beneath.
+// population is Layer 5, produced per zone against all three layers beneath.
 // ---------------------------------------------------------------------------
 
 let uid = 0;

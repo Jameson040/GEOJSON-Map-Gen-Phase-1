@@ -1,0 +1,38 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install (from lockfile)
+        run: npm ci
+
+      - name: Static project health
+        run: npm run check
+
+      - name: Seven-layer pipeline smoke + checkpoint round-trip
+        run: npm run smoke
+
+      - name: Full world verifier (default seed)
+        run: npm run verify
+
+      - name: Full world verifier (second seed)
+        run: npm run verify -- meridian-3
+
+      - name: Golden-seed regression harness (62 seeds)
+        run: npm run seeds
+
+      - name: Production build (single file)
+        run: npm run build

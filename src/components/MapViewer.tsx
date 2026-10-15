@@ -14,6 +14,7 @@ import { formatLatLon, PLANET_WIDTH, wrapWorldX } from "../world/constants";
 import { ZoomIn, ZoomOut, Maximize2, Crosshair, Gauge, Layers } from "lucide-react";
 import type { CadastreConfig, SettlementCadastre } from "../world/cadastre/cadastre-types";
 import { getCadastreForSettlement } from "../world/cadastre/cadastre-cache";
+import { MapLegend } from "./MapLegend";
 
 function geographicFeatureVisible(f: MapFeature, layers: RenderLayers): boolean {
   switch (f.properties.featureType) {
@@ -47,13 +48,13 @@ interface Props {
   compartments?: RegionCompartment[];
   /** Layer 1 regional detail (for JIT cadastre generation) */
   region?: GeneratedRegion;
-  /** Layer 2 (biosphere) overlay — read-only, drawn above geography. */
+  /** Layer 3 (biosphere) overlay — read-only, drawn above geography. */
   bio?: { items: { feature: BioFeature; color: string }[]; visible: boolean };
-  /** Layer 2b (geological mineral deposits) overlay */
+  /** Layer 2 (geological mineral deposits) overlay */
   resources?: { items: ResourceDepositNode[]; visible: boolean };
-  /** Layer 3 (settlements) overlay — read-only, drawn above the biosphere. */
+  /** Layer 4 (settlements) overlay — read-only, drawn above the biosphere. */
   human?: { items: Settlement[]; visible: boolean };
-  /** Layer 4 (population) data — attaches occupancy & era data to settlements. */
+  /** Layer 5 (population) data — attaches occupancy & era data to settlements. */
   population?: { model: Map<string, ZonePopulation>; visible: boolean; era?: string };
   /** Layer 6 (trade routes & roads) overlay — connecting settlements across terrain */
   routes?: { items: RouteFeature[]; visible: boolean };
@@ -126,7 +127,7 @@ export function MapViewer({
     setHovered((f) => f && !geographicFeatureVisible(f, layers) ? null : f);
   }, [layers]);
 
-  // Layer 2 overlay, precomputed for the renderer (read-only view of bio data)
+  // Layer 3 overlay, precomputed for the renderer (read-only view of bio data)
   const bioOverlay = useMemo<BioOverlayItem[] | undefined>(() => {
     if (focusFilter === "geo" || focusFilter === "human") return undefined;
     if (!bio?.visible || !bio.items.length) return undefined;
@@ -362,7 +363,7 @@ export function MapViewer({
 
     const s = r.scaleFor(vp, bounds);
 
-    // Layer 3 hover has top priority (settlements sit on top of everything).
+    // Layer 4 hover has top priority (settlements sit on top of everything).
     if (human?.visible && human.items.length) {
       let best: Settlement | null = null;
       let bestD = 16 / s;
@@ -384,7 +385,7 @@ export function MapViewer({
       setHoveredHuman(null);
     }
 
-    // Layer 2 hover takes precedence when the biosphere overlay is visible.
+    // Layer 3 hover takes precedence when the biosphere overlay is visible.
     if (bio?.visible && bio.items.length) {
       let bestBio: BioFeature | null = null;
       let bestD = Infinity;
@@ -614,6 +615,11 @@ export function MapViewer({
         )}
       </div>
 
+      {/* legend */}
+      {mode === "region" && (routes?.visible || human?.visible) && (
+        <MapLegend themeId={themeId} raised={minimap.length > 0} />
+      )}
+
       {/* minimap */}
       {minimap.length > 0 && (
         <div className="absolute bottom-3 left-3 z-20 hidden md:block">
@@ -663,7 +669,7 @@ export function MapViewer({
         </span>
       </div>
 
-      {/* Layer 3 hover card */}
+      {/* Layer 4 hover card */}
       {hoveredHuman && (
         <div className="pointer-events-auto absolute left-3 top-14 z-30 max-w-xs rounded-lg border border-orange-500/40 bg-slate-950/92 px-3 py-2 text-xs shadow-2xl backdrop-blur-md">
           <div className="flex items-center gap-2">
@@ -694,13 +700,13 @@ export function MapViewer({
             )}
             <div className="text-zinc-500 italic">{hoveredHuman.origin}</div>
           </div>
-          {/* Layer 4 population enhancement when active */}
+          {/* Layer 5 population enhancement when active */}
           {(() => {
             const zpop = population?.model?.get(hoveredHuman.id);
             if (!zpop) {
               return (
                 <div className="mt-1.5 rounded border border-orange-400/25 bg-orange-400/10 px-1.5 py-1 text-[10px] text-orange-200/80">
-                  Layer 3 · Habitable zone — structure only.
+                  Layer 4 · Habitable zone — structure only.
                 </div>
               );
             }
@@ -732,7 +738,7 @@ export function MapViewer({
         </div>
       )}
 
-      {/* Layer 2 hover card */}
+      {/* Layer 3 hover card */}
       {hoveredBio && !hovered && !hoveredHuman && (
         <div className="pointer-events-none absolute left-3 top-14 z-30 max-w-xs rounded-lg border border-lime-500/40 bg-slate-950/92 px-3 py-2 text-xs shadow-2xl backdrop-blur-md">
           <div className="flex items-center gap-2">
@@ -756,7 +762,7 @@ export function MapViewer({
             <div className="text-zinc-500 italic">{hoveredBio.origin}</div>
           </div>
           <div className="mt-1.5 rounded border border-lime-400/25 bg-lime-400/10 px-1.5 py-1 text-[10px] text-lime-200/80">
-            Layer 2 · Biosphere — overlays the frozen geography
+            Layer 3 · Biosphere — overlays the frozen geography
           </div>
         </div>
       )}

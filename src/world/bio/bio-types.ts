@@ -1,7 +1,7 @@
 import type { BBox, GenProgress, Pt, RegionCompartment, VerificationReport } from "../types";
 
 // ---------------------------------------------------------------------------
-// LAYER 2 — FLORA & FAUNA (Biosphere)
+// LAYER 3 — FLORA & FAUNA (Biosphere)
 //
 // This layer sits ON TOP of the frozen geographic layer. It only READS the
 // GeneratedRegion (coastline, biomes, rivers, lakes, ranges, compartments,

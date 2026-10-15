@@ -7,7 +7,7 @@ import { dist } from "../geom";
 import { kmToUnits } from "../constants";
 
 // ---------------------------------------------------------------------------
-// LAYER 3 VERIFIER — HABITABLE-SITE invariants against both frozen layers.
+// LAYER 4 VERIFIER — HABITABLE-SITE invariants against both frozen layers.
 // Population-free: rules judge livability, capacity and structure only.
 // ---------------------------------------------------------------------------
 
@@ -63,7 +63,7 @@ export function verifyHumanLayer(
       "Every zone lies within its type's distance of a frozen river, lake or (for sea settlements) the coast.",
       s.length, water, `Every zone has water within reach.`);
     push("human_food", "presence", "Resources Reachable",
-      "Every required food role for the zone type is reachable from frozen Layer-2 populations inside its supply radius.",
+      "Every required food role for the zone type is reachable from frozen Layer-3 populations inside its supply radius.",
       s.length, resources, `Every zone is within reach of its required resources.`);
   }
 
@@ -125,7 +125,7 @@ export function verifyHumanLayer(
     if (region.features.length !== geoCountAtStart) v.push(`Geography mutated: ${geoCountAtStart} → ${region.features.length}`);
     if (bio.populations.length !== bioCountAtStart) v.push(`Biosphere mutated: ${bioCountAtStart} → ${bio.populations.length}`);
     push("human_layer_separation", "presence", "Lower Layers & Pop-Free Contract",
-      "Zone records hold structure only (no occupied headcount — that is Layer 4), and geography/biosphere counts are unchanged.",
+      "Zone records hold structure only (no occupied headcount — that is Layer 5), and geography/biosphere counts are unchanged.",
       s.length + 2, v, `Structure-only zones verified; L1 (${geoCountAtStart}) & L2 (${bioCountAtStart}) untouched.`);
   }
 

@@ -1,22 +1,27 @@
 {
-  "name": "react-vite-tailwind",
+  "name": "terra-ex-nihilo",
   "private": true,
-  "version": "0.0.0",
+  "version": "0.1.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "check": "tsx scripts/check-project.ts",
+    "smoke": "tsx scripts/check-project.ts --smoke terra-novus",
+    "verify": "tsx scripts/verify-world.ts",
+    "seeds": "tsx scripts/golden-seeds.ts",
+    "seeds:update": "tsx scripts/golden-seeds.ts --update",
+    "backup": "node scripts/create-backup.mjs"
   },
   "dependencies": {
-    "@resvg/resvg-js": "^2.6.2",
-    "@turf/turf": "^7.4.0",
+    "@turf/helpers": "^7.4.0",
+    "@turf/union": "^7.4.0",
     "clsx": "2.1.1",
     "lucide-react": "^1.48.0",
     "react": "19.2.6",
     "react-dom": "19.2.6",
-    "tailwind-merge": "3.4.0",
-    "tsx": "^4.23.0"
+    "tailwind-merge": "3.4.0"
   },
   "devDependencies": {
     "@tailwindcss/vite": "4.1.17",
@@ -25,6 +30,7 @@
     "@types/react-dom": "19.2.3",
     "@vitejs/plugin-react": "5.1.1",
     "tailwindcss": "4.1.17",
+    "tsx": "^4.23.0",
     "typescript": "5.9.3",
     "vite": "7.3.2",
     "vite-plugin-singlefile": "2.3.0"

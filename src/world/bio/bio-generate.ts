@@ -8,7 +8,7 @@ import { makeRng, range, irange, type RNG } from "../rng";
 import { kmToUnits } from "../constants";
 
 // ---------------------------------------------------------------------------
-// LAYER 2 GENERATION — deliberately creative and unconstrained.
+// LAYER 3 GENERATION — deliberately creative and unconstrained.
 //
 // Populations are scattered with no regard for climate, habitat or water:
 // rice may land on a glacier, tuna in a desert, camels in a rainforest.

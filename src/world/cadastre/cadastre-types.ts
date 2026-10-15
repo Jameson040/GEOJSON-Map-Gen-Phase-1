@@ -2,7 +2,7 @@ import type { Pt, VerificationReport } from "../types";
 import type { SettlementTier, SettlementType } from "../human/human-types";
 
 // ---------------------------------------------------------------------------
-// LAYER 5 — CADASTRE & ROOFS (Micro-Urbanism for Google Earth Fantasy Lite)
+// LAYER 7 — CADASTRE & ROOFS (Micro-Urbanism for Google Earth Fantasy Lite)
 //
 // Generates street networks, land parcels, building footprints, and pitched
 // roofs down to cottage scale (1:1000m down to 1:10m).

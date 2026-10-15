@@ -34,6 +34,10 @@ export class BioEnvReader {
   private biomes: BiomePatch[] = [];
   private relief: ReliefPoly[] = [];
   private riverPts: Pt[] = [];
+  /** Same sampled river vertices as riverPts, with Strahler order + discharge. */
+  riverInfo: { p: Pt; order: number; dischargeM3s: number }[] = [];
+  /** Actual lake polygons (riverPts/lakePts only store centre approximations). */
+  lakeRings: { ring: Pt[]; bbox: { minX: number; minY: number; maxX: number; maxY: number } }[] = [];
   private lakePts: { c: Pt; rUnits: number }[] = [];
   private coastPts: Pt[] = [];
   private moisture: number;
@@ -63,8 +67,15 @@ export class BioEnvReader {
         });
       } else if (t === "river" && f.geometry.type === "LineString") {
         const co = f.geometry.coordinates as Pt[];
-        for (let i = 0; i < co.length; i += 3) this.riverPts.push(co[i]);
+        const order = (f.properties.strahlerOrder as number | undefined) ?? 1;
+        const dischargeM3s = (f.properties.dischargeM3s as number | undefined) ?? 10;
+        for (let i = 0; i < co.length; i += 3) {
+          this.riverPts.push(co[i]);
+          this.riverInfo.push({ p: co[i], order, dischargeM3s });
+        }
       } else if (t === "lake" && f.geometry.type === "Polygon") {
+        const ring = f.geometry.coordinates[0] as Pt[];
+        this.lakeRings.push({ ring, bbox: f.bbox });
         const b = f.bbox;
         this.lakePts.push({
           c: [(b.minX + b.maxX) / 2, (b.minY + b.maxY) / 2],
@@ -95,6 +106,29 @@ export class BioEnvReader {
       if (d < best) best = d;
     }
     return unitsToKm(best);
+  }
+
+  /** True when the point lies inside an actual lake polygon. */
+  pointInLake(p: Pt): boolean {
+    for (const l of this.lakeRings) {
+      if (!this.inBBox(p, l.bbox)) continue;
+      if (pointInRing(p, l.ring)) return true;
+    }
+    return false;
+  }
+
+  /** Nearest sampled river vertex with its Strahler order and discharge. */
+  nearestRiverInfo(p: Pt): { p: Pt; order: number; dischargeM3s: number; distUnits: number } | null {
+    let best = Infinity;
+    let bestInfo: { p: Pt; order: number; dischargeM3s: number } | null = null;
+    for (const r of this.riverInfo) {
+      const d = dist(p, r.p);
+      if (d < best) {
+        best = d;
+        bestInfo = r;
+      }
+    }
+    return bestInfo ? { ...bestInfo, distUnits: best } : null;
   }
 
   nearestFreshKm(p: Pt): number {

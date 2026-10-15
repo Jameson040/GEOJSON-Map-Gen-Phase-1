@@ -7,7 +7,7 @@ import { dist } from "../geom";
 import { kmToUnits, unitsToKm } from "../constants";
 
 // ---------------------------------------------------------------------------
-// READ-ONLY bridge for Layer 3. Reuses the biosphere's geography reader (which
+// READ-ONLY bridge for Layer 4. Reuses the biosphere's geography reader (which
 // itself only reads the frozen GeneratedRegion) and adds a view of the frozen
 // biosphere populations and geological resources, so a settlement site can be
 // judged on terrain, water, biome, food and mineral supply without touching lower layers.

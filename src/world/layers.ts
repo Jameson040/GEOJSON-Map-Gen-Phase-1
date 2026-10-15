@@ -1,4 +1,4 @@
-import type { GeneratedRegion, VerificationReport } from "./types";
+import type { GeneratedRegion, VerificationCheck, VerificationReport } from "./types";
 import type { ResourceLayerResult } from "./resources";
 import type { BioLayerResult } from "./bio/bio-types";
 import type { HumanLayerResult } from "./human/human-types";
@@ -35,6 +35,18 @@ export interface WorldLayerDef {
   color: string;
   /** Layer that must exist in a region before this one can be generated. */
   dependsOn: WorldLayerId | null;
+  /**
+   * Optional inputs this layer consumes when present. They are NOT hard
+   * prerequisites (the layer generates without them) and regenerating them
+   * does NOT evict this layer — but it makes it stale, which the UI badges.
+   */
+  readsFrom?: WorldLayerId[];
+  /**
+   * Optional inputs whose regeneration MUST evict this layer even though they
+   * are not prerequisites. Example: cadastre scales roofs with the population
+   * model, so a new population invalidates every cached cadastre.
+   */
+  refreshesFrom?: WorldLayerId[];
   description: string;
 }
 
@@ -77,6 +89,7 @@ export const WORLD_LAYERS: WorldLayerDef[] = [
     glyph: "🏘️",
     color: "#f97316",
     dependsOn: "bio",
+    readsFrom: ["resource"],
     description: "Habitable zones — camping grounds, village, town, city and metropolis sites marked by structure and resources. No population: that is Layer 5.",
   },
   {
@@ -97,6 +110,7 @@ export const WORLD_LAYERS: WorldLayerDef[] = [
     glyph: "🛤️",
     color: "#f59e0b",
     dependsOn: "human",
+    readsFrom: ["resource"],
     description: "Terrain-aware royal highways, regional market roads, mountain pass tracks and coastal shipping lanes connecting settlements.",
   },
   {
@@ -107,6 +121,8 @@ export const WORLD_LAYERS: WorldLayerDef[] = [
     glyph: "🏛️",
     color: "#c084fc",
     dependsOn: "human",
+    readsFrom: ["population"],
+    refreshesFrom: ["population"],
     description: "Street network, parcel boundaries, cottage roofs and top-down architectural footprints. Zoomable satellite view.",
   },
 ];
@@ -114,6 +130,33 @@ export const WORLD_LAYERS: WorldLayerDef[] = [
 export const LAYER_BY_ID: Record<WorldLayerId, WorldLayerDef> = Object.fromEntries(
   WORLD_LAYERS.map((l) => [l.id, l])
 ) as Record<WorldLayerId, WorldLayerDef>;
+
+/**
+ * Layers that must be evicted when `layerId` is regenerated: everything that
+ * transitively consumes it over the HARD edges (dependsOn + refreshesFrom).
+ * `readsFrom` is deliberately excluded — re-tuning an optional input must not
+ * destroy the layers built on top of it; it only makes them stale (see
+ * layerStatuses). This is the single source of truth the workspace store uses
+ * for invalidation, so a new layer only needs a registry entry to participate.
+ */
+export function layerConsumers(layerId: WorldLayerId): WorldLayerId[] {
+  const hardInputs = (l: WorldLayerDef): WorldLayerId[] =>
+    [l.dependsOn, ...(l.refreshesFrom ?? [])].filter((x): x is WorldLayerId => !!x);
+  const consumers = new Set<WorldLayerId>();
+  let grew = true;
+  while (grew) {
+    grew = false;
+    for (const l of WORLD_LAYERS) {
+      if (consumers.has(l.id) || l.id === layerId) continue;
+      const inputs = hardInputs(l);
+      if (inputs.includes(layerId) || inputs.some((i) => consumers.has(i))) {
+        consumers.add(l.id);
+        grew = true;
+      }
+    }
+  }
+  return [...consumers];
+}
 
 /** Everything the UI knows about one region, across all layers. */
 export interface RegionLayerState {
@@ -134,6 +177,55 @@ export interface LayerStatus {
   verify: VerificationReport | null;
   /** True when the layer beneath exists but this one does not. */
   available: boolean;
+  /** True when an input layer (hard or optional) was generated AFTER this layer. */
+  stale: boolean;
+  /** Names of the newer input layers that made this layer stale. */
+  staleInputs: string[];
+}
+
+/** Normalise the heterogeneous generatedAt stamps (epoch ms | ISO string) to epoch ms. */
+function layerTimestamp(v: string | number | undefined | null): number {
+  if (typeof v === "number") return v;
+  if (typeof v === "string") {
+    const parsed = Date.parse(v);
+    return Number.isFinite(parsed) ? parsed : 0;
+  }
+  return 0;
+}
+
+/**
+ * Merge per-settlement cadastre verification reports into one region-level
+ * report (checks are identified by id; counts are summed, pass requires all).
+ */
+function aggregateCadastreVerification(state: NonNullable<RegionLayerState["cadastre"]>): VerificationReport | null {
+  const reports = [...state.cadastres.values()].map((c) => c.verificationAfter);
+  if (!reports.length) return null;
+  const mergedChecks = new Map<string, VerificationCheck>();
+  for (const report of reports) {
+    for (const check of report.checks) {
+      const existing = mergedChecks.get(check.id);
+      if (!existing) {
+        mergedChecks.set(check.id, { ...check, checkedCount: 0, violationCount: 0 });
+      }
+      const target = mergedChecks.get(check.id)!;
+      target.checkedCount += check.checkedCount;
+      target.violationCount += check.violationCount;
+      target.passed = target.passed && check.passed;
+    }
+  }
+  const checks = [...mergedChecks.values()];
+  const totalViolations = checks.reduce((s, c) => s + c.violationCount, 0);
+  const passedChecks = checks.filter((c) => c.passed).length;
+  return {
+    targetName: `${state.cadastres.size} settlements`,
+    tier: 2,
+    passedAll: passedChecks === checks.length,
+    totalChecks: checks.length,
+    passedChecks,
+    totalViolations,
+    elapsedMs: 0,
+    checks,
+  };
 }
 
 export function layerStatuses(state: RegionLayerState): LayerStatus[] {
@@ -145,6 +237,17 @@ export function layerStatuses(state: RegionLayerState): LayerStatus[] {
     population: !!state.population,
     routes: !!state.routes,
     cadastre: !!state.cadastre,
+  };
+  const timestamps: Record<WorldLayerId, number> = {
+    geo: layerTimestamp(state.geo?.generatedAt),
+    resource: layerTimestamp(state.resource?.generatedAt),
+    bio: layerTimestamp(state.bio?.generatedAt),
+    human: layerTimestamp(state.human?.generatedAt),
+    population: layerTimestamp(state.population?.generatedAt),
+    routes: layerTimestamp(state.routes?.generatedAt),
+    cadastre: state.cadastre
+      ? Math.max(0, ...[...state.cadastre.cadastres.values()].map((c) => layerTimestamp(c.generatedAt)))
+      : 0,
   };
   return WORLD_LAYERS.map((l) => {
     const dep = l.dependsOn ? present[l.dependsOn] : true;
@@ -177,11 +280,18 @@ export function layerStatuses(state: RegionLayerState): LayerStatus[] {
         : l.id === "routes"
         ? state.routes?.verifyAfter ?? null
         : l.id === "cadastre"
-        ? state.cadastre && state.cadastre.cadastres.size > 0
-          ? state.cadastre.cadastres.values().next().value?.verificationAfter ?? null
-          : null
+        ? state.cadastre ? aggregateCadastreVerification(state.cadastre) : null
         : null;
-    return { id: l.id, present: isPresent, count, verify, available: dep && !isPresent };
+    // Staleness: any input (prerequisite or optional read) generated after this layer.
+    const inputs = [l.dependsOn, ...(l.readsFrom ?? []), ...(l.refreshesFrom ?? [])].filter(
+      (x): x is WorldLayerId => !!x
+    );
+    const staleInputs = isPresent
+      ? inputs
+          .filter((i) => present[i] && timestamps[i] > timestamps[l.id])
+          .map((i) => LAYER_BY_ID[i].label)
+      : [];
+    return { id: l.id, present: isPresent, count, verify, available: dep && !isPresent, stale: staleInputs.length > 0, staleInputs };
   });
 }
 

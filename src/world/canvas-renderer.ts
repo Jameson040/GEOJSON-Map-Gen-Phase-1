@@ -71,15 +71,15 @@ export interface RenderInput {
   /** Tier-2 only: processing blocks of the active region. */
   compartments?: RegionCompartment[];
   mode: "planet" | "region";
-  /** Layer 2 (biosphere) overlay — additive, drawn above geography. */
+  /** Layer 3 (biosphere) overlay — additive, drawn above geography. */
   bioOverlay?: BioOverlayItem[];
-  /** Layer 2b (geological wealth & fantasy minerals) overlay */
+  /** Layer 2 (geological wealth & fantasy minerals) overlay */
   resourceOverlay?: ResourceOverlayItem[];
   /** Layer 6 (routes & trade networks) overlay — veins connecting settlements */
   routeOverlay?: RouteOverlayItem[];
-  /** Layer 3 (settlements) overlay — additive, drawn above the biosphere. */
+  /** Layer 4 (settlements) overlay — additive, drawn above the biosphere. */
   humanOverlay?: HumanOverlayItem[];
-  /** Layer 5 (cadastre) — streets, parcels, and pitched roofs (Google Earth Fantasy Lite) */
+  /** Layer 7 (cadastre) — streets, parcels, and pitched roofs (Google Earth Fantasy Lite) */
   cadastres?: SettlementCadastre[];
   /** World title for decorative cartouche (e.g. "Great Gidding") */
   worldTitle?: string;
@@ -122,7 +122,7 @@ export interface HumanOverlayItem {
   type?: string;
 }
 
-/** Minimal draw contract for Layer-2 populations (keeps layers decoupled). */
+/** Minimal draw contract for Layer-3 populations (keeps layers decoupled). */
 export interface BioOverlayItem {
   x: number;
   y: number;
@@ -595,7 +595,7 @@ export class MapRenderer {
       ctx.restore();
     }
 
-    // --- 11c. Layer 2: biosphere overlay (region tab only, additive) -------
+    // --- 11c. Layer 3: biosphere overlay (region tab only, additive) -------
     if (mode === "region" && input.bioOverlay?.length) {
       ctx.save();
       ctx.textAlign = "center";
@@ -672,7 +672,7 @@ export class MapRenderer {
       ctx.restore();
     }
 
-    // --- 11c-2. Layer 5: Cadastre & Rooftops (Google Earth Satellite View Lite) ---
+    // --- 11c-2. Layer 7: Cadastre & Rooftops (Google Earth Satellite View Lite) ---
     if (mode === "region" && input.cadastres?.length) {
       for (const cad of input.cadastres) {
         drawSettlementCadastre({
@@ -763,7 +763,7 @@ export class MapRenderer {
       ctx.restore();
     }
 
-    // --- 11d. Layer 3: settlements (region tab only, above biosphere) ------
+    // --- 11d. Layer 4: settlements (region tab only, above biosphere) ------
     if (mode === "region" && input.humanOverlay?.length) {
       ctx.save();
       const hasCadastreOnScreen = (input.cadastres?.length ?? 0) > 0 && vp.zoom >= 45;

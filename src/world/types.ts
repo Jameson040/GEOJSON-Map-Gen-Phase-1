@@ -83,6 +83,8 @@ export interface FeatureProperties {
   /** Parent region (continent/island) this detail feature belongs to. */
   regionId?: string;
   regionName?: string;
+  /** World-layer tag added by the full-world bundle export (e.g. "L1 Geography"). */
+  layer?: string;
 
   // Relief
   elevation?: number;

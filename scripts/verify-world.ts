@@ -109,10 +109,10 @@ async function main() {
   }
 
   // ---------------------------------------------------------------------
-  // LAYER 2 — Biosphere: generate + finetune + verify on two region classes.
+  // LAYER 3 — Biosphere: generate + finetune + verify on two region classes.
   // The geographic layer must come out byte-identical in feature count.
   // ---------------------------------------------------------------------
-  console.log(`\n[LAYER 2 — FLORA & FAUNA]`);
+  console.log(`\n[LAYER 3 — FLORA & FAUNA]`);
   const bioTargets = [
     macro.regions.find((r) => r.sizeClass === "continent") ?? macro.regions[0],
     macro.regions.find((r) => r.sizeClass === "large_island") ?? macro.regions.find((r) => r.sizeClass === "small_island"),
@@ -148,13 +148,13 @@ async function main() {
       console.error("Geographic content changed during biosphere generation");
     }
 
-    // ---- LAYER 3 — Habitable Zones (structure only, no population) --------
+    // ---- LAYER 4 — Habitable Zones (structure only, no population) --------
     const bioCount = bio.populations.length;
     const biosphereBefore = fingerprint(bio);
     const human = await generateHumanLayer(region, bio, { density: 1, urbanisation: 0.4 });
     const h = human.report;
     console.log(
-      `    [L3] raw ${h.rawCount} → kept ${h.keptAsIs} + moved ${h.relocated} + added ${h.added} − dropped ${h.dropped} (${h.demotions} demotions) = ${h.finalCount} habitable zones, structural cap ${human.stats.totalCapacity.toLocaleString()} (${h.elapsedMs} ms)`
+      `    [L4] raw ${h.rawCount} → kept ${h.keptAsIs} + moved ${h.relocated} + added ${h.added} − dropped ${h.dropped} (${h.demotions} demotions) = ${h.finalCount} habitable zones, structural cap ${human.stats.totalCapacity.toLocaleString()} (${h.elapsedMs} ms)`
     );
     console.log(
       `         tiers n${human.stats.byTier.nomadic} h${human.stats.byTier.hamlet} v${human.stats.byTier.village} t${human.stats.byTier.town} c${human.stats.byTier.city} m${human.stats.byTier.metropolis} · best ${human.stats.bestSite?.name ?? "—"} (${human.stats.bestSite?.type ?? "—"}, cap ${human.stats.bestSite?.capacity ?? 0}) · habitation ${human.stats.byHabitation.lived_now}/${human.stats.byHabitation.ancient_pulse}/${human.stats.byHabitation.potential}`
@@ -162,10 +162,10 @@ async function main() {
     console.log(
       `         verify: raw ${human.verifyBefore.totalViolations}v → finetuned ${human.verifyAfter.totalViolations}v  ${human.verifyAfter.passedAll ? "ALL PASS ✓" : "FAIL ✗"} | geo untouched: ${region.features.length === geoCount} · bio untouched: ${bio.populations.length === bioCount}`
     );
-    // No settlement may carry a population — population is Layer 4.
+    // No settlement may carry a population — population is Layer 5.
     if (human.settlements.some((s) => (s as unknown as Record<string, unknown>).population !== undefined)) {
       failures++;
-      console.error("Population leaked into the habitable-zones layer (population must be Layer 4)");
+      console.error("Population leaked into the habitable-zones layer (population must be Layer 5)");
     }
     for (const c of human.verifyAfter.checks) {
       if (!c.passed) {
@@ -179,14 +179,14 @@ async function main() {
       console.error("Lower-layer content changed during human-layer generation");
     }
 
-    // ---- LAYER 4 — Time-dependent Population on top of the frozen zones ----
+    // ---- LAYER 5 — Time-dependent Population on top of the frozen zones ----
     const noZones = human.settlements.length === 0;
     void noZones;
     const zonesBefore = fingerprint(human);
     const population = await generatePopulationLayer(region, bio, human, { era: "current", year: 2026, targetScale: 1, customSeed: undefined });
     const stocked = [...population.model.values()].filter((p) => p.occupancy > 0).length;
     console.log(
-      `    [L4] current · ${population.report.finalOccupancy.toLocaleString()} actual people on ${stocked}/${population.report.zonesModelled} zones · ${population.report.foodShortageZones} hunger zones · revived ${population.report.revived} (${population.report.elapsedMs} ms)`
+      `    [L5] current · ${population.report.finalOccupancy.toLocaleString()} actual people on ${stocked}/${population.report.zonesModelled} zones · ${population.report.foodShortageZones} hunger zones · revived ${population.report.revived} (${population.report.elapsedMs} ms)`
     );
     console.log(
       `         verify: raw ${population.verifyBefore.totalViolations}v → finetuned ${population.verifyAfter.totalViolations}v  ${population.verifyAfter.passedAll ? "ALL PASS ✓" : "FAIL ✗"} | zones untouched: ${fingerprint(human) === zonesBefore} · bio untouched: ${fingerprint(bio) === biosphereBefore}`
@@ -203,7 +203,7 @@ async function main() {
       failures++;
       console.error("Zone content changed during population-layer generation");
     }
-    // Layer 4 values are time structure, but values must never exceed an extreme bound
+    // Layer 5 values are time structure, but values must never exceed an extreme bound
     if ([...population.model.values()].some((p) => p.occupancy > 60_000_000)) {
       failures++;
       console.error("An occupancy exceeds the absolute plausibility bound — population ran away");

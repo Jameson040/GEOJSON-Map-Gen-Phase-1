@@ -41,6 +41,8 @@ export interface RouteFeature {
   bridgesCount: number;
   /** Mountain saddles traversed. */
   mountainPassesCount: number;
+  /** Lake crossings (causeways or ferry stretches) — zero when the road went around. */
+  lakeCrossings: number;
   /** Trade goods that flow along this route. */
   tradeGoods: string[];
   /** Minimum camera zoom level to render this route (0 for highways, 1.5 for byways). */
@@ -90,7 +92,31 @@ export interface RouteFinetuneReport {
   bridgesAdded: number;
   finalRoutesCount: number;
   droppedByRule: Record<string, number>;
+  /** Paths that had no terrain route at all and fell back to an arc (target: 0). */
+  fallbackArcs: number;
+  /** Land routes that crossed a lake via causeway. */
+  causewayRoutes: number;
+  /** Land routes that hopped a strait/bay via ferry. */
+  ferryRoutes: number;
+  /** Winding paths replaced by a saner line on the relaxed cost surface. */
+  straightened: number;
   elapsedMs: number;
+}
+
+/** Serialisable summary of the math-only derived heightfield (L6 consumer). */
+export interface HeightfieldSummary {
+  cols: number;
+  rows: number;
+  cellKm: number;
+  riversConditioned: number;
+  riverViolations: number;
+  lakesFlattened: number;
+  lakeViolations: number;
+  peaksChecked: number;
+  peaksHonored: number;
+  rangesChecked: number;
+  rangesHonored: number;
+  bakeMs: number;
 }
 
 export interface RouteLayerResult {
@@ -102,6 +128,8 @@ export interface RouteLayerResult {
   rawRoutes: RouteFeature[];
   stats: RouteStats;
   report: RouteFinetuneReport;
+  /** Derived elevation field used by the pathfinder (math-only, never rendered). */
+  heightfield?: HeightfieldSummary;
   verifyBefore: VerificationReport;
   verifyAfter: VerificationReport;
   generatedAt: number;

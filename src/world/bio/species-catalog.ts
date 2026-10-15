@@ -7,7 +7,7 @@ import type { SpeciesCategory, SpeciesDef } from "./bio-types";
 // (EcoCrop_DB.csv, mirrored at github.com/OpenCLIM/ecocrop — fields TMIN/TMAX,
 // RMIN/RMAX, ALTMX), simplified from growing-season cardinal values to the
 // annual-mean envelopes this planet's climate model exposes, and trimmed from
-// 2,568 species to the set human settlement (Layer 3) actually depends on:
+// 2,568 species to the set human settlement (Layer 4) actually depends on:
 // every major edible crop group, livestock, draft/transport animals, game,
 // fisheries, plus timber and forage. Animal ranges follow FAO/FAOSTAT
 // husbandry and fisheries distribution data.
@@ -152,7 +152,7 @@ export const SPECIES_CATALOG: SpeciesDef[] = [
   S("warm-fishery", "Reef & Tuna Fishery", "Thunnus / reef spp.", "🐠", "wild", "fish_marine", ["fishery", "protein"], 16, 31, 0, 9999, [25, 90], { habitat: "marine" }),
   S("shellfish", "Shellfish Beds", "Bivalvia / Crustacea", "🦪", "wild", "shellfish", ["fishery", "protein"], -4, 30, 0, 9999, [10, 40], { habitat: "coastal" }),
 
-  // ---- SUPPORT FLORA for Layer 3 (EcoCrop forestry/forage entries) ---------
+  // ---- SUPPORT FLORA for Layer 4 (EcoCrop forestry/forage entries) ---------
   S("pasture", "Pasture Grasses", "Poaceae (forage)", "🌱", "flora", "forage", ["forage"], -10, 36, 150, 2200, [30, 110], { biomes: ["grassland", "savanna", "tundra", "forest", "wetland"] }),
   S("softwood", "Softwood Timber", "Pinus / Picea / Abies", "🌲", "flora", "timber", ["timber"], -16, 22, 350, 2200, [30, 110], { biomes: ["forest", "tundra", "grassland"] }),
   S("hardwood", "Hardwood Timber", "Quercus / Fagus / Tectona", "🌳", "flora", "timber", ["timber"], 4, 32, 550, 3200, [30, 110], { biomes: ["forest", "savanna", "wetland"] }),

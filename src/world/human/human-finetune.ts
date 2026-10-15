@@ -17,7 +17,7 @@ import { dist } from "../geom";
 import { kmToUnits } from "../constants";
 
 // ---------------------------------------------------------------------------
-// LAYER 3 FINETUNE — rule half of the adversarial pair for HABITABLE SITES.
+// LAYER 4 FINETUNE — rule half of the adversarial pair for HABITABLE SITES.
 // Population-free: rules judge whether a place is LIVABLE, never how many
 // people live there. Structural capacity is a site property only.
 //   R1 site — on land, off glacier, no forbidden biome, hard needs met
